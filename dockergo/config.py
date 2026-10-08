@@ -109,28 +109,35 @@ def _parse(raw, source: Path) -> Config:
     if not isinstance(sites_raw, list) or not sites_raw:
         raise ConfigError(f"{source}: 'sites' must be a non-empty array")
 
+    explicit_homes = [
+        i for i, entry in enumerate(sites_raw)
+        if isinstance(entry, dict) and bool(entry.get("home", False))
+    ]
+    if len(explicit_homes) > 1:
+        raise ConfigError(f"{source}: more than one site has home=true")
+    home_index = explicit_homes[0] if explicit_homes else 0
+
     sites = []
     for i, entry in enumerate(sites_raw):
+        is_home = i == home_index
+        if not is_home:
+            for key in ("docker_api", "summary_url"):
+                if key not in entry:
+                    raise ConfigError(f"{source}: sites[{i}] missing required key '{key}'")
         try:
             sites.append(
                 Site(
                     name=str(entry["name"]),
                     ssid=str(entry["ssid"]),
                     password=str(entry.get("password", "")),
-                    docker_api=str(entry["docker_api"]),
-                    summary_url=str(entry["summary_url"]),
-                    home=bool(entry.get("home", False)),
+                    docker_api=str(entry.get("docker_api", "")),
+                    summary_url=str(entry.get("summary_url", "")),
+                    home=is_home,
                     image_platform=entry.get("image_platform"),
                 )
             )
         except KeyError as exc:
             raise ConfigError(f"{source}: sites[{i}] missing required key {exc}") from exc
-
-    homes = [s for s in sites if s.home]
-    if len(homes) > 1:
-        raise ConfigError(f"{source}: more than one site has home=true")
-    if not homes:
-        sites[0].home = True  # fall back: the first site is treated as home
 
     return Config(
         device_name=str(raw.get("device_name", "dockergo")),

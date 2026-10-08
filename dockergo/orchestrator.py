@@ -91,6 +91,8 @@ class Orchestrator:
 
         wanted: list = []
         for site in self.cfg.sites:
+            if site.home:
+                continue
             try:
                 for ref in summary_api.fetch_pending_images(site.summary_url):
                     if ref not in wanted:

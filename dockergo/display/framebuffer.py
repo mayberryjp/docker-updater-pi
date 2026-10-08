@@ -13,6 +13,7 @@ from __future__ import annotations
 import mmap
 import os
 import struct
+import sys
 from typing import Optional
 
 from PIL import Image
@@ -133,8 +134,11 @@ class MockFrameBuffer:
 def open_framebuffer(device: Optional[str] = None, mock: bool = False):
     if mock:
         return MockFrameBuffer()
+    requested = device or os.environ.get("DOCKERGO_FB", "/dev/fb1")
     try:
-        return FrameBuffer(device)
-    except (FileNotFoundError, PermissionError, OSError):
-        # No panel present (dev laptop, missing overlay) — fall back to PNG frames.
-        return MockFrameBuffer()
+        return FrameBuffer(requested)
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        png_path = os.path.abspath("dockergo-frame.png")
+        print(f"DockerGo: cannot open framebuffer {requested}: {exc}; writing PNG to {png_path}",
+              file=sys.stderr)
+        return MockFrameBuffer(out=png_path)
