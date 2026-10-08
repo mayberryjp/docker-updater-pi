@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dockergo"
+version = "0.1.0"
+description = "Sneakernet Docker updater for Raspberry Pi 4 with a 3.5\" SPI LCD"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "docker>=7.0",
+    "requests>=2.28",
+    "Pillow>=9.4",
+    "numpy>=1.21",
+]
+
+[project.scripts]
+dockergo = "dockergo.__main__:main"
+
+[tool.setuptools]
+packages = ["dockergo", "dockergo.display"]

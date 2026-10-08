@@ -1,0 +1,18 @@
+[Unit]
+Description=DockerGo sneakernet Docker updater (LCD appliance)
+After=network-online.target docker.service NetworkManager.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m dockergo --config /boot/firmware/dockergo/config.json
+Restart=always
+RestartSec=3
+# Needs root for nmcli, the Docker socket and /dev/fb1.
+User=root
+Environment=DOCKERGO_FB=/dev/fb1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Local dev artifacts
+dockergo-frame.png
+config.json
+*.log
