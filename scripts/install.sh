@@ -37,8 +37,24 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "==> Installing DockerGo (global, no venv)"
-pip3 install --break-system-packages --no-cache-dir "$REPO_DIR"
-pip3 install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO_DIR"
+/usr/bin/python3 -m pip install --break-system-packages --no-cache-dir "$REPO_DIR"
+/usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO_DIR"
+
+echo "==> Verifying the package used by the system service"
+INSTALLED_PACKAGE_DIR="$(cd / && /usr/bin/python3 -c 'import dockergo; from pathlib import Path; print(Path(dockergo.__file__).parent)')"
+for SOURCE_FILE in "$REPO_DIR"/dockergo/*.py "$REPO_DIR"/dockergo/display/*.py; do
+  RELATIVE_FILE=${SOURCE_FILE#"$REPO_DIR"/dockergo/}
+  if ! cmp -s "$SOURCE_FILE" "$INSTALLED_PACKAGE_DIR/$RELATIVE_FILE"; then
+    echo "Installed module does not match $SOURCE_FILE" >&2
+    echo "Expected installed file: $INSTALLED_PACKAGE_DIR/$RELATIVE_FILE" >&2
+    exit 1
+  fi
+done
+if ! (cd / && /usr/bin/python3 -c 'import dockergo.__main__'); then
+  echo "DockerGo entry point could not be imported by /usr/bin/python3" >&2
+  exit 1
+fi
+echo "Verified installed package: $INSTALLED_PACKAGE_DIR"
 
 echo "==> Enabling the 3.5\" SPI panel overlay in $BOOT_CFG"
 # GeeekPi / Waveshare high-speed 3.5" (MHS / MPI3501) uses the 'mhs35' overlay.

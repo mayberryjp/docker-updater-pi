@@ -72,26 +72,33 @@ once to install and enable the updater service and timer.
 ## Update / rebuild (on the Pi)
 
 After the latest source changes have been pushed, update the checkout and
-reinstall the package used by the system service:
+reinstall the package using the same interpreter as the system service. Do not
+start the service unless the installed module matches the checkout:
 
 ```bash
 sudo systemctl stop dockergo
-cd /home/mayberry/docker-updater-pi
-git pull --ff-only
-grep -q '^def load_config' dockergo/config.py || { echo "Checkout is missing the updated config loader"; exit 1; }
-sudo /usr/bin/python3 -m pip install --break-system-packages --no-deps --force-reinstall .
-cd /
-sudo /usr/bin/python3 -c 'from dockergo.config import load_config; print("load_config import OK")'
+REPO=/home/mayberry/docker-updater-pi
+OWNER=$(stat -c '%U' "$REPO")
+runuser -u "$OWNER" -- git -C "$REPO" pull --ff-only origin main
+git -C "$REPO" log -1 --oneline
+sudo /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO"
+INSTALLED_PACKAGE_DIR=$(cd / && sudo /usr/bin/python3 -c 'import dockergo; from pathlib import Path; print(Path(dockergo.__file__).parent)')
+for SOURCE_FILE in "$REPO"/dockergo/*.py "$REPO"/dockergo/display/*.py; do
+    RELATIVE_FILE=${SOURCE_FILE#"$REPO"/dockergo/}
+    cmp "$SOURCE_FILE" "$INSTALLED_PACKAGE_DIR/$RELATIVE_FILE" || { echo "Installed package mismatch; keeping service stopped"; exit 1; }
+done
+(cd / && sudo /usr/bin/python3 -c 'import dockergo.__main__; print("DockerGo startup imports OK")') || { echo "Installed package import failed; keeping service stopped"; exit 1; }
 sudo systemctl reset-failed dockergo
 sudo systemctl start dockergo
 sudo journalctl -fu dockergo
 ```
 
-The source check prevents reinstalling an old checkout. `--no-deps` reinstalls
-DockerGo without redownloading its dependencies (including the large Pillow
-source archive). Run the import check from `/` so it verifies the installed
-package rather than the source checkout. If it fails, do not start the service;
-check which package is loaded with `sudo /usr/bin/python3 -c 'import dockergo; print(dockergo.__file__)'`.
+The byte comparisons prove the modules loaded by `/usr/bin/python3`, which
+systemd runs, match the checkout. The entry-point import catches broken or
+partial installs before systemd starts the service. `--no-deps` avoids
+rebuilding or downloading dependencies. If any check fails, leave DockerGo
+stopped and inspect the imported package path with `sudo /usr/bin/python3 -c
+'import dockergo; print(dockergo.__file__)'`.
 
 ## Configuration
 
