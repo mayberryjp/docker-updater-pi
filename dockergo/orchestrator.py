@@ -57,23 +57,22 @@ class Orchestrator:
                       detail="", progress=None, online=False)
         visible = self.wifi.scan()
         homes = self.cfg.home_sites
-        vpn_processed_remotes = False
+        home_visible = any(home.ssid in visible for home in homes)
 
         for home in homes:
             if home.ssid in visible:
                 if self._do_home(home):
-                    vpn_processed_remotes = bool(home.wireguard_connection)
                     break
 
         did_remote = False
-        for site in self.cfg.sites:
-            if site.home or vpn_processed_remotes:
-                continue
-            if site.ssid in visible:
-                did_remote = True
-                self._do_remote(site)
+        if not home_visible:
+            for site in self.cfg.sites:
+                if site.home:
+                    continue
+                if site.ssid in visible:
+                    did_remote = True
+                    self._do_remote(site)
 
-        home_visible = any(home.ssid in visible for home in homes)
         if not home_visible and not did_remote:
             self.announce("No known networks in range", state=State.OFFLINE,
                           headline="No known Wi-Fi", detail="", progress=None, online=False)
@@ -100,11 +99,6 @@ class Orchestrator:
             return False
 
         self._sync_home(home)
-        if wireguard:
-            for site in self.cfg.sites:
-                if not site.home:
-                    self._do_remote(site, via_vpn=True)
-
         return True
 
     def _sync_home(self, home: Site):
@@ -140,12 +134,8 @@ class Orchestrator:
         self.announce("Home sync complete", state=State.HOME_SYNC,
                       headline="Home sync complete", detail="", progress=None)
 
-    def _do_remote(self, site: Site, *, via_vpn: bool = False):
-        if via_vpn:
-            self.announce(f"Using WireGuard for {site.name}", state=State.CONNECTING,
-                          headline=f"VPN to {site.name}", detail=site.ssid,
-                          site=site.name, online=True)
-        elif not self._connect(site):
+    def _do_remote(self, site: Site):
+        if not self._connect(site):
             return
         try:
             needed = summary_api.fetch_pending_images(site.summary_url)

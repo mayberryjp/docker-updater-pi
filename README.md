@@ -109,12 +109,14 @@ Config is JSON on the boot partition (editable from any PC):
 For an emergency home hotspot that reaches remotes over WireGuard, set
 `"wireguard_connection": "dockergo-emergency"` on that home site. Create a
 matching WireGuard connection in NetworkManager and disable its autoconnect.
-DockerGo brings it up for remote-site syncs on that home SSID, processes all
-remote sites through the tunnel without joining their Wi-Fi networks, and leaves
-it up while that Wi-Fi remains connected. A NetworkManager dispatcher guard
-removes the tunnel when `wlan0` leaves the configured home SSID, including if
-DockerGo stops unexpectedly. Remote `docker_api` and `summary_url` addresses
-must be routed through the tunnel.
+When that home SSID is visible, DockerGo can use the tunnel to read remote
+summaries and download needed images into the Pi's local Docker store. Home
+cycles never upload images or update remote daemons, even if a remote Wi-Fi
+SSID is also visible. The tunnel stays up while the configured home Wi-Fi is
+connected; a NetworkManager dispatcher guard removes it when `wlan0` leaves
+that SSID, including if DockerGo stops unexpectedly. Remote `summary_url`
+addresses must be routed through the tunnel. Remote daemons are updated only
+on remote-only cycles, when no configured home SSID is visible.
 
 Each site exposes a summary endpoint returning the images it still needs:
 
