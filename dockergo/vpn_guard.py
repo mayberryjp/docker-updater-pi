@@ -18,8 +18,9 @@ def active_ssid() -> str:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "could not query active Wi-Fi")
     for line in result.stdout.splitlines():
-        if line.startswith("yes:"):
-            return line[4:]
+        in_use, separator, ssid = line.partition(":")
+        if separator and in_use in ("*", "yes"):
+            return ssid
     return ""
 
 
