@@ -37,6 +37,7 @@ class Orchestrator:
         self.notifier = notifier
         self.wifi = wifi or WifiManager()
         self._local = None
+        self._vpn_cleanup_failed = False
 
     @property
     def local(self):
@@ -53,23 +54,38 @@ class Orchestrator:
             self.notifier.send(message)
 
     def cycle(self):
+        self._vpn_cleanup_failed = False
+        for home in self.cfg.home_sites:
+            if home.wireguard_connection and not self.wifi.disconnect_wireguard(
+                    home.wireguard_connection):
+                self.announce(f"Could not ensure WireGuard is down for {home.name}",
+                              state=State.ERROR, headline="VPN cleanup failed",
+                              detail=home.name, online=False)
+                return
+
         self.announce("Scanning Wi-Fi", state=State.SCANNING, headline="Scanning Wi-Fi",
                       detail="", progress=None, online=False)
         visible = self.wifi.scan()
-        home = self.cfg.home_site
+        homes = self.cfg.home_sites
+        vpn_processed_remotes = False
 
-        if home and home.ssid in visible:
-            self._do_home(home)
+        for home in homes:
+            if home.ssid in visible:
+                if self._do_home(home):
+                    vpn_processed_remotes = bool(home.wireguard_connection)
+                    break
+                if self._vpn_cleanup_failed:
+                    return
 
         did_remote = False
         for site in self.cfg.sites:
-            if site is home:
+            if site.home or vpn_processed_remotes:
                 continue
             if site.ssid in visible:
                 did_remote = True
                 self._do_remote(site)
 
-        home_visible = bool(home and home.ssid in visible)
+        home_visible = any(home.ssid in visible for home in homes)
         if not home_visible and not did_remote:
             self.announce("No known networks in range", state=State.OFFLINE,
                           headline="No known Wi-Fi", detail="", progress=None, online=False)
@@ -85,10 +101,34 @@ class Orchestrator:
                       headline="Wi-Fi failed", detail=site.ssid, online=False)
         return False
 
-    def _do_home(self, home: Site):
+    def _do_home(self, home: Site) -> bool:
         if not self._connect(home):
-            return
+            return False
 
+        wireguard = home.wireguard_connection
+        if wireguard and not self.wifi.connect_wireguard(wireguard):
+            self.announce(f"WireGuard failed for {home.name}", state=State.ERROR,
+                          headline="VPN failed", detail=home.name, online=False)
+            if not self.wifi.disconnect_wireguard(wireguard):
+                self._vpn_cleanup_failed = True
+            return False
+
+        try:
+            self._sync_home(home)
+            if wireguard:
+                for site in self.cfg.sites:
+                    if not site.home:
+                        self._do_remote(site, via_vpn=True)
+        finally:
+            if wireguard and not self.wifi.disconnect_wireguard(wireguard):
+                self._vpn_cleanup_failed = True
+                self.announce(f"Could not disconnect WireGuard for {home.name}",
+                              state=State.ERROR, headline="VPN cleanup failed",
+                              detail=home.name, online=False)
+
+        return not self._vpn_cleanup_failed
+
+    def _sync_home(self, home: Site):
         wanted: list = []
         for site in self.cfg.sites:
             if site.home:
@@ -121,8 +161,12 @@ class Orchestrator:
         self.announce("Home sync complete", state=State.HOME_SYNC,
                       headline="Home sync complete", detail="", progress=None)
 
-    def _do_remote(self, site: Site):
-        if not self._connect(site):
+    def _do_remote(self, site: Site, *, via_vpn: bool = False):
+        if via_vpn:
+            self.announce(f"Using WireGuard for {site.name}", state=State.CONNECTING,
+                          headline=f"VPN to {site.name}", detail=site.ssid,
+                          site=site.name, online=True)
+        elif not self._connect(site):
             return
         try:
             needed = summary_api.fetch_pending_images(site.summary_url)
@@ -170,3 +214,11 @@ class Orchestrator:
 
         self.announce(f"{site.name} up to date", state=State.APPLYING,
                       headline=f"{site.name} done", detail="", progress=None)
+
+    def close(self):
+        for home in self.cfg.home_sites:
+            wireguard = home.wireguard_connection
+            if wireguard and not self.wifi.disconnect_wireguard(wireguard):
+                self.announce(f"Could not disconnect WireGuard for {home.name}",
+                              state=State.ERROR, headline="VPN cleanup failed",
+                              detail=home.name, online=False)

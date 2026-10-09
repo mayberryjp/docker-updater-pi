@@ -55,7 +55,14 @@ sudo reboot
 
 The installer adds the panel overlay, applies seamless-boot tweaks, installs the
 package globally, writes a config template to the boot partition, and enables a
-systemd service that launches the app on every boot.
+systemd service that launches the app on every boot. It also enables an updater
+that fast-forwards this checkout and reinstalls DockerGo when a new commit is
+available. It checks during boot and retries every 15 minutes; update failures
+are logged but do not prevent the app from starting. A successful update while
+the app is running restarts the service to load the new version.
+
+For an existing installation, pull this update and run `sudo bash scripts/install.sh`
+once to install and enable the updater service and timer.
 
 > **Panel driver note:** the installer enables the `mhs35` overlay used by the
 > high-speed GeeekPi/Waveshare 3.5". If the screen stays white, install the
@@ -97,7 +104,17 @@ Config is JSON on the boot partition (editable from any PC):
 | `image_platform` | Manifest-list platform selector (default `linux/amd64`) |
 | `discord_webhook` | Optional webhook for mirrored status lines |
 | `poll_interval` | Seconds between Wi-Fi scan cycles |
-| `sites[]` | `name`, `home` (exactly one), `ssid`, `password`, `docker_api`, `summary_url` |
+| `sites[]` | `name`, `home` (one or more; first site defaults to home if none are marked), `ssid`, `password`, `docker_api`, `summary_url`, optional `wireguard_connection` on a home site |
+
+For an emergency home hotspot that reaches remotes over WireGuard, set
+`"wireguard_connection": "dockergo-emergency"` on that home site. Create a
+matching WireGuard connection in NetworkManager and disable its autoconnect.
+DockerGo brings it up for remote-site syncs on that home SSID, processes all
+remote sites through the tunnel without joining their Wi-Fi networks, then
+disconnects it. A NetworkManager dispatcher guard also removes the tunnel when
+`wlan0` leaves the configured home SSID, including if DockerGo stops
+unexpectedly. Remote `docker_api` and `summary_url` addresses must be routed
+through the tunnel.
 
 Each site exposes a summary endpoint returning the images it still needs:
 

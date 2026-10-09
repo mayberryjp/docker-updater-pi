@@ -54,11 +54,26 @@ if [ ! -f "$CONFIG_DIR/config.json" ]; then
   echo "    wrote $CONFIG_DIR/config.json  (edit your sites / Wi-Fi here)"
 fi
 
+echo "==> Installing automatic GitHub update service"
+UPDATE_ENV=/etc/default/dockergo-update
+escaped_repo_dir=${REPO_DIR//\\/\\\\}
+escaped_repo_dir=${escaped_repo_dir//\"/\\\"}
+printf 'DOCKERGO_REPO_DIR="%s"\n' "$escaped_repo_dir" > "$UPDATE_ENV"
+chmod 0644 "$UPDATE_ENV"
+install -m 0755 "$REPO_DIR/scripts/update.sh" /usr/local/sbin/dockergo-update
+install -m 0755 "$REPO_DIR/scripts/dockergo-wireguard-dispatcher" \
+  /etc/NetworkManager/dispatcher.d/90-dockergo-wireguard
+install -m 0644 "$REPO_DIR/systemd/dockergo-update.service" \
+  /etc/systemd/system/dockergo-update.service
+install -m 0644 "$REPO_DIR/systemd/dockergo-update.timer" \
+  /etc/systemd/system/dockergo-update.timer
+
 echo "==> Installing + enabling the systemd service"
 SERVICE=/etc/systemd/system/dockergo.service
 sed "s#/boot/firmware/dockergo/config.json#$CONFIG_DIR/config.json#" \
     "$REPO_DIR/systemd/dockergo.service" > "$SERVICE"
 systemctl daemon-reload
+systemctl enable --now dockergo-update.timer
 systemctl enable dockergo.service
 
 echo

@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically retry DockerGo GitHub updates
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15min
+Unit=dockergo-update.service
+
+[Install]
+WantedBy=timers.target

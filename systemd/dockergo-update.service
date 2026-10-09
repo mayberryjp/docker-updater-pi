@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync and install DockerGo updates from GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/dockergo-update
+ExecStart=/usr/local/sbin/dockergo-update
+TimeoutStartSec=180

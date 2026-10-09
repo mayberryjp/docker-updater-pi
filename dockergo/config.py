@@ -36,6 +36,7 @@ class Site:
     summary_url: str
     home: bool = False
     image_platform: Optional[str] = None
+    wireguard_connection: Optional[str] = None
 
     @property
     def docker_host(self) -> str:
@@ -51,11 +52,13 @@ class Config:
     sites: list = field(default_factory=list)
 
     @property
+    def home_sites(self) -> list:
+        configured = [site for site in self.sites if site.home]
+        return configured or self.sites[:1]
+
+    @property
     def home_site(self) -> Optional[Site]:
-        for site in self.sites:
-            if site.home:
-                return site
-        return self.sites[0] if self.sites else None
+        return self.home_sites[0] if self.home_sites else None
 
     def platform_for(self, site: Site) -> str:
         return site.image_platform or self.image_platform
@@ -109,17 +112,23 @@ def _parse(raw, source: Path) -> Config:
     if not isinstance(sites_raw, list) or not sites_raw:
         raise ConfigError(f"{source}: 'sites' must be a non-empty array")
 
-    explicit_homes = [
+    home_indices = {
         i for i, entry in enumerate(sites_raw)
         if isinstance(entry, dict) and bool(entry.get("home", False))
-    ]
-    if len(explicit_homes) > 1:
-        raise ConfigError(f"{source}: more than one site has home=true")
-    home_index = explicit_homes[0] if explicit_homes else 0
+    }
+    if not home_indices:
+        home_indices.add(0)
 
     sites = []
     for i, entry in enumerate(sites_raw):
-        is_home = i == home_index
+        is_home = i in home_indices
+        wireguard_connection = entry.get("wireguard_connection")
+        if wireguard_connection is not None:
+            wireguard_connection = str(wireguard_connection).strip()
+            if not wireguard_connection:
+                raise ConfigError(f"{source}: sites[{i}].wireguard_connection cannot be empty")
+            if not is_home:
+                raise ConfigError(f"{source}: sites[{i}].wireguard_connection is only valid for home sites")
         if not is_home:
             for key in ("docker_api", "summary_url"):
                 if key not in entry:
@@ -134,6 +143,7 @@ def _parse(raw, source: Path) -> Config:
                     summary_url=str(entry.get("summary_url", "")),
                     home=is_home,
                     image_platform=entry.get("image_platform"),
+                    wireguard_connection=wireguard_connection,
                 )
             )
         except KeyError as exc:

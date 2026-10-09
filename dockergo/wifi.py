@@ -57,6 +57,49 @@ class WifiManager:
         except (OSError, subprocess.SubprocessError):
             return False
 
+    def connect_wireguard(self, connection: str, timeout: int = 45) -> bool:
+        active = self._active_connections(timeout)
+        if active is None:
+            return False
+        if connection in active:
+            return True
+        try:
+            result = _run(["nmcli", "connection", "up", "id", connection],
+                          timeout=timeout)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode == 0:
+            return True
+        active = self._active_connections(timeout)
+        return active is not None and connection in active
+
+    def disconnect_wireguard(self, connection: str, timeout: int = 25) -> bool:
+        active = self._active_connections(timeout)
+        if active is None:
+            return False
+        if connection not in active:
+            return True
+        try:
+            result = _run(["nmcli", "connection", "down", "id", connection],
+                          timeout=timeout)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode == 0:
+            active = self._active_connections(timeout)
+            return active is not None and connection not in active
+        active = self._active_connections(timeout)
+        return active is not None and connection not in active
+
+    def _active_connections(self, timeout: int) -> Optional[set]:
+        try:
+            active = _run(["nmcli", "--terse", "--escape", "no", "--fields", "NAME",
+                           "connection", "show", "--active"], timeout=timeout)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if active.returncode != 0:
+            return None
+        return set(active.stdout.splitlines())
+
     def signal(self) -> int:
         """Signal strength (0-100) of the active connection, or 0."""
         try:
