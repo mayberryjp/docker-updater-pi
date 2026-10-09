@@ -55,11 +55,12 @@ sudo reboot
 
 The installer adds the panel overlay, applies seamless-boot tweaks, installs the
 package globally, writes a config template to the boot partition, and enables a
-systemd service that launches the app on every boot. It also enables an updater
-that fast-forwards this checkout and reinstalls DockerGo when a new commit is
-available. It checks during boot and retries every 15 minutes; update failures
-are logged but do not prevent the app from starting. A successful update while
-the app is running restarts the service to load the new version.
+systemd service that launches the app on every boot. Before DockerGo starts,
+the updater makes a bounded attempt to fast-forward this checkout, verifies the
+installed package, and rebuilds it from a clean wheel if needed. If GitHub is
+offline, a matching installed package or a successful local rebuild lets the
+app start. The updater retries every 15 minutes; a successful update while the
+app is running restarts DockerGo.
 
 For an existing installation, pull this update and run `sudo bash scripts/install.sh`
 once to install and enable the updater service and timer.
@@ -71,9 +72,8 @@ once to install and enable the updater service and timer.
 
 ## Update / rebuild (on the Pi)
 
-After the latest source changes have been pushed, update the checkout and
-reinstall the package using the same interpreter as the system service. Do not
-start the service unless the installed module matches the checkout:
+For an existing installation, first pull the pushed commit, then use the same
+clean-wheel deployment helper as the boot updater:
 
 ```bash
 sudo systemctl stop dockergo
@@ -81,25 +81,16 @@ REPO=/home/mayberry/docker-updater-pi
 OWNER=$(stat -c '%U' "$REPO")
 runuser -u "$OWNER" -- git -C "$REPO" pull --ff-only origin main
 git -C "$REPO" log -1 --oneline
-rm -rf "$REPO/build" "$REPO/dockergo.egg-info"
-sudo /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO"
-INSTALLED_PACKAGE_DIR=$(cd / && sudo /usr/bin/python3 -c 'import dockergo; from pathlib import Path; print(Path(dockergo.__file__).parent)')
-for SOURCE_FILE in "$REPO"/dockergo/*.py "$REPO"/dockergo/display/*.py; do
-    RELATIVE_FILE=${SOURCE_FILE#"$REPO"/dockergo/}
-    cmp "$SOURCE_FILE" "$INSTALLED_PACKAGE_DIR/$RELATIVE_FILE" || { echo "Installed package mismatch; keeping service stopped"; exit 1; }
-done
-(cd / && sudo /usr/bin/python3 -c 'import dockergo.__main__; print("DockerGo startup imports OK")') || { echo "Installed package import failed; keeping service stopped"; exit 1; }
+sudo bash "$REPO/scripts/deploy_package.sh" "$REPO" no-deps
 sudo systemctl reset-failed dockergo
 sudo systemctl start dockergo
 sudo journalctl -fu dockergo
 ```
 
-The byte comparisons prove the modules loaded by `/usr/bin/python3`, which
-systemd runs, match the checkout. The entry-point import catches broken or
-partial installs before systemd starts the service. `--no-deps` avoids
-rebuilding or downloading dependencies. If any check fails, leave DockerGo
-stopped and inspect the imported package path with `sudo /usr/bin/python3 -c
-'import dockergo; print(dockergo.__file__)'`.
+The helper removes stale setuptools build output, builds a wheel, checks every
+wheel module against the checkout before installing it, then checks the
+installed modules and smoke-imports the systemd entry point. It exits nonzero
+on any mismatch; do not start DockerGo until it prints that deployment passed.
 
 ## Configuration
 

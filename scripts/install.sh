@@ -8,7 +8,10 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 for required_file in \
   scripts/update.sh \
+  scripts/deploy_package.sh \
+  scripts/verify_package.py \
   scripts/dockergo-wireguard-dispatcher \
+  systemd/dockergo.service \
   systemd/dockergo-update.service \
   systemd/dockergo-update.timer; do
   if [ ! -f "$REPO_DIR/$required_file" ]; then
@@ -28,7 +31,7 @@ CONFIG_DIR=/boot/firmware/dockergo
 echo "==> Installing OS packages"
 apt-get update
 apt-get install -y python3-pip python3-pil python3-numpy fonts-dejavu-core \
-                   network-manager git curl
+                   python3-setuptools python3-wheel network-manager git curl
 
 echo "==> Ensuring Docker is installed"
 if ! command -v docker >/dev/null 2>&1; then
@@ -37,26 +40,10 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "==> Installing DockerGo (global, no venv)"
-# Setuptools may reuse copied modules from a previous checkout.
-rm -rf "$REPO_DIR/build" "$REPO_DIR/dockergo.egg-info"
-/usr/bin/python3 -m pip install --break-system-packages --no-cache-dir "$REPO_DIR"
-/usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO_DIR"
-
-echo "==> Verifying the package used by the system service"
-INSTALLED_PACKAGE_DIR="$(cd / && /usr/bin/python3 -c 'import dockergo; from pathlib import Path; print(Path(dockergo.__file__).parent)')"
-for SOURCE_FILE in "$REPO_DIR"/dockergo/*.py "$REPO_DIR"/dockergo/display/*.py; do
-  RELATIVE_FILE=${SOURCE_FILE#"$REPO_DIR"/dockergo/}
-  if ! cmp -s "$SOURCE_FILE" "$INSTALLED_PACKAGE_DIR/$RELATIVE_FILE"; then
-    echo "Installed module does not match $SOURCE_FILE" >&2
-    echo "Expected installed file: $INSTALLED_PACKAGE_DIR/$RELATIVE_FILE" >&2
-    exit 1
-  fi
-done
-if ! (cd / && /usr/bin/python3 -c 'import dockergo.__main__'); then
-  echo "DockerGo entry point could not be imported by /usr/bin/python3" >&2
-  exit 1
-fi
-echo "Verified installed package: $INSTALLED_PACKAGE_DIR"
+bash "$REPO_DIR/scripts/deploy_package.sh" "$REPO_DIR" full
+install -d /var/lib/dockergo
+git -C "$REPO_DIR" rev-parse HEAD > /var/lib/dockergo/installed-commit.tmp
+mv /var/lib/dockergo/installed-commit.tmp /var/lib/dockergo/installed-commit
 
 echo "==> Enabling the 3.5\" SPI panel overlay in $BOOT_CFG"
 # GeeekPi / Waveshare high-speed 3.5" (MHS / MPI3501) uses the 'mhs35' overlay.

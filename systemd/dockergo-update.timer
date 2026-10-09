@@ -2,7 +2,7 @@
 Description=Periodically retry DockerGo GitHub updates
 
 [Timer]
-OnBootSec=2min
+OnBootSec=5min
 OnUnitInactiveSec=15min
 Unit=dockergo-update.service
 

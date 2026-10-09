@@ -1,6 +1,7 @@
 [Unit]
 Description=DockerGo sneakernet Docker updater (LCD appliance)
-After=network-online.target docker.service NetworkManager.service
+Requires=dockergo-update.service
+After=dockergo-update.service network-online.target docker.service NetworkManager.service
 Wants=network-online.target docker.service
 
 [Service]
