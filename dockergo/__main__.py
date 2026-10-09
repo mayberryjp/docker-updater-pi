@@ -63,7 +63,6 @@ def main(argv=None) -> int:
                            detail=f"next scan in {interval}s", progress=None)
                 stop.wait(interval)
     finally:
-        orchestrator.close()
         notifier.close()
         display.stop()
     return 0

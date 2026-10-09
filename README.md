@@ -110,11 +110,11 @@ For an emergency home hotspot that reaches remotes over WireGuard, set
 `"wireguard_connection": "dockergo-emergency"` on that home site. Create a
 matching WireGuard connection in NetworkManager and disable its autoconnect.
 DockerGo brings it up for remote-site syncs on that home SSID, processes all
-remote sites through the tunnel without joining their Wi-Fi networks, then
-disconnects it. A NetworkManager dispatcher guard also removes the tunnel when
-`wlan0` leaves the configured home SSID, including if DockerGo stops
-unexpectedly. Remote `docker_api` and `summary_url` addresses must be routed
-through the tunnel.
+remote sites through the tunnel without joining their Wi-Fi networks, and leaves
+it up while that Wi-Fi remains connected. A NetworkManager dispatcher guard
+removes the tunnel when `wlan0` leaves the configured home SSID, including if
+DockerGo stops unexpectedly. Remote `docker_api` and `summary_url` addresses
+must be routed through the tunnel.
 
 Each site exposes a summary endpoint returning the images it still needs:
 
