@@ -32,7 +32,7 @@ if [[ "$COMMIT" == "$INSTALLED_COMMIT" ]]; then
 fi
 
 echo "DockerGo update: installing commit $COMMIT"
-/usr/bin/python3 -m pip install --break-system-packages --no-deps --force-reinstall "$REPO_DIR"
+/usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO_DIR"
 install -d "$STATE_DIR"
 printf '%s\n' "$COMMIT" > "$MARKER.tmp"
 mv "$MARKER.tmp" "$MARKER"
