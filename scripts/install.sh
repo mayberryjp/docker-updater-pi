@@ -6,6 +6,17 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+for required_file in \
+  scripts/update.sh \
+  scripts/dockergo-wireguard-dispatcher \
+  systemd/dockergo-update.service \
+  systemd/dockergo-update.timer; do
+  if [ ! -f "$REPO_DIR/$required_file" ]; then
+    echo "Required installer file is missing: $REPO_DIR/$required_file" >&2
+    exit 1
+  fi
+done
+
 BOOT_CFG=/boot/firmware/config.txt
 [ -f "$BOOT_CFG" ] || BOOT_CFG=/boot/config.txt
 CMDLINE=/boot/firmware/cmdline.txt
