@@ -32,7 +32,22 @@ if [[ "$COMMIT" == "$INSTALLED_COMMIT" ]]; then
 fi
 
 echo "DockerGo update: installing commit $COMMIT"
+# Setuptools may reuse copied modules from a previous checkout.
+rm -rf "$REPO_DIR/build" "$REPO_DIR/dockergo.egg-info"
 /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO_DIR"
+INSTALLED_PACKAGE_DIR="$(cd / && /usr/bin/python3 -c 'import dockergo; from pathlib import Path; print(Path(dockergo.__file__).parent)')"
+for SOURCE_FILE in "$REPO_DIR"/dockergo/*.py "$REPO_DIR"/dockergo/display/*.py; do
+  RELATIVE_FILE=${SOURCE_FILE#"$REPO_DIR"/dockergo/}
+  if ! cmp -s "$SOURCE_FILE" "$INSTALLED_PACKAGE_DIR/$RELATIVE_FILE"; then
+    echo "DockerGo update: installed module does not match $SOURCE_FILE" >&2
+    echo "DockerGo update: expected installed file: $INSTALLED_PACKAGE_DIR/$RELATIVE_FILE" >&2
+    exit 1
+  fi
+done
+if ! (cd / && /usr/bin/python3 -c 'import dockergo.__main__'); then
+  echo "DockerGo update: entry point import failed; keeping running service unchanged" >&2
+  exit 1
+fi
 install -d "$STATE_DIR"
 printf '%s\n' "$COMMIT" > "$MARKER.tmp"
 mv "$MARKER.tmp" "$MARKER"

@@ -37,6 +37,8 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "==> Installing DockerGo (global, no venv)"
+# Setuptools may reuse copied modules from a previous checkout.
+rm -rf "$REPO_DIR/build" "$REPO_DIR/dockergo.egg-info"
 /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir "$REPO_DIR"
 /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO_DIR"
 

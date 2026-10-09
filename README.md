@@ -81,6 +81,7 @@ REPO=/home/mayberry/docker-updater-pi
 OWNER=$(stat -c '%U' "$REPO")
 runuser -u "$OWNER" -- git -C "$REPO" pull --ff-only origin main
 git -C "$REPO" log -1 --oneline
+rm -rf "$REPO/build" "$REPO/dockergo.egg-info"
 sudo /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO"
 INSTALLED_PACKAGE_DIR=$(cd / && sudo /usr/bin/python3 -c 'import dockergo; from pathlib import Path; print(Path(dockergo.__file__).parent)')
 for SOURCE_FILE in "$REPO"/dockergo/*.py "$REPO"/dockergo/display/*.py; do
