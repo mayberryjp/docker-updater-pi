@@ -27,6 +27,7 @@ fi
 
 echo "==> Installing DockerGo (global, no venv)"
 pip3 install --break-system-packages --no-cache-dir "$REPO_DIR"
+pip3 install --break-system-packages --no-cache-dir --no-deps --force-reinstall "$REPO_DIR"
 
 echo "==> Enabling the 3.5\" SPI panel overlay in $BOOT_CFG"
 # GeeekPi / Waveshare high-speed 3.5" (MHS / MPI3501) uses the 'mhs35' overlay.
