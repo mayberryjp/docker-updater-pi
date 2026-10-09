@@ -62,6 +62,30 @@ systemd service that launches the app on every boot.
 > vendor driver (`goodtft/LCD-show` → `MHS35-show`) or switch the overlay to
 > `tft35a` for a plain ILI9486. See comments in [scripts/install.sh](scripts/install.sh).
 
+## Update / rebuild (on the Pi)
+
+After the latest source changes have been pushed, update the checkout and
+reinstall the package used by the system service:
+
+```bash
+sudo systemctl stop dockergo
+cd /home/mayberry/docker-updater-pi
+git pull --ff-only
+grep -q '^def load_config' dockergo/config.py || { echo "Checkout is missing the updated config loader"; exit 1; }
+sudo /usr/bin/python3 -m pip install --break-system-packages --no-deps --force-reinstall .
+cd /
+sudo /usr/bin/python3 -c 'from dockergo.config import load_config; print("load_config import OK")'
+sudo systemctl reset-failed dockergo
+sudo systemctl start dockergo
+sudo journalctl -fu dockergo
+```
+
+The source check prevents reinstalling an old checkout. `--no-deps` reinstalls
+DockerGo without redownloading its dependencies (including the large Pillow
+source archive). Run the import check from `/` so it verifies the installed
+package rather than the source checkout. If it fails, do not start the service;
+check which package is loaded with `sudo /usr/bin/python3 -c 'import dockergo; print(dockergo.__file__)'`.
+
 ## Configuration
 
 Config is JSON on the boot partition (editable from any PC):
