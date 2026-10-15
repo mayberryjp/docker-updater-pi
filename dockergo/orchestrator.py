@@ -103,6 +103,7 @@ class Orchestrator:
 
     def _sync_home(self, home: Site):
         wanted: list = []
+        summaries_complete = True
         for site in self.cfg.sites:
             if site.home:
                 continue
@@ -111,7 +112,16 @@ class Orchestrator:
                     if ref not in wanted:
                         wanted.append(ref)
             except Exception as exc:
+                summaries_complete = False
                 self.announce(f"{site.name} summary failed: {exc}")
+
+        cache_state_available = True
+        try:
+            managed = dk.load_managed_images()
+        except Exception as exc:
+            cache_state_available = False
+            managed = set()
+            self.announce(f"Image cache state unavailable; pruning disabled: {exc}")
 
         self.announce(f"Home needs {len(wanted)} image(s)", state=State.HOME_SYNC,
                       headline="Downloading images", detail=f"{len(wanted)} queued",
@@ -120,6 +130,7 @@ class Orchestrator:
         for index, ref in enumerate(wanted, 1):
             short = _short(ref)
             if dk.have_image(self.local, ref):
+                managed.add(ref)
                 self.announce(f"Cached {short}")
                 continue
             self.announce(f"Downloading {short}", headline=f"Downloading {short}",
@@ -127,9 +138,24 @@ class Orchestrator:
             try:
                 dk.pull(self.local, ref, self.cfg.platform_for(home),
                         progress=lambda text, frac: self.status.set(detail=text[:60], progress=frac))
+                managed.add(ref)
                 self.announce(f"Downloaded {short}")
             except Exception as exc:
                 self.announce(f"Download failed {short}: {exc}", state=State.ERROR)
+
+        if cache_state_available:
+            if summaries_complete:
+                for ref in sorted(managed - set(wanted)):
+                    try:
+                        dk.remove_cached_image(self.local, ref)
+                        managed.remove(ref)
+                        self.announce(f"Removed unused image {_short(ref)}")
+                    except Exception as exc:
+                        self.announce(f"Image cleanup failed {_short(ref)}: {exc}", state=State.ERROR)
+            try:
+                dk.save_managed_images(managed)
+            except Exception as exc:
+                self.announce(f"Could not save image cache state: {exc}", state=State.ERROR)
 
         self.announce("Home sync complete", state=State.HOME_SYNC,
                       headline="Home sync complete", detail="", progress=None)

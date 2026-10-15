@@ -12,10 +12,14 @@ Registry-V2 client, content-addressed blob store and OCI archive assembly:
 
 from __future__ import annotations
 
+import json
+import os
 import tempfile
+from pathlib import Path
 from typing import Callable, Optional
 
 ProgressCb = Callable[[str, Optional[float]], None]
+CACHE_STATE_PATH = Path("/var/lib/dockergo/cached-images.json")
 
 
 def _docker():
@@ -38,6 +42,47 @@ def have_image(client, ref: str) -> bool:
         return True
     except (ImageNotFound, APIError):
         return False
+
+
+def load_managed_images(path: Path = CACHE_STATE_PATH) -> set[str]:
+    """Load image refs DockerGo has previously cached; a missing file means none."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set()
+    if not isinstance(data, list) or any(
+        not isinstance(ref, str) or not ref for ref in data
+    ):
+        raise ValueError(f"Invalid DockerGo image cache state in {path}")
+    return set(data)
+
+
+def save_managed_images(refs: set[str], path: Path = CACHE_STATE_PATH):
+    """Atomically persist DockerGo-managed image refs."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=path.name, suffix=".tmp", delete=False,
+        ) as temp:
+            temp_path = Path(temp.name)
+            json.dump(sorted(refs), temp, indent=2)
+            temp.write("\n")
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+
+
+def remove_cached_image(client, ref: str):
+    """Remove a managed image ref without forcing removal of in-use images."""
+    from docker.errors import ImageNotFound
+    try:
+        image = client.images.get(ref)
+    except ImageNotFound:
+        return
+    image.remove(force=False)
 
 
 def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None):

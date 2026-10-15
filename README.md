@@ -31,6 +31,13 @@ there until applied at a remote site. The Pi never *runs* these images, it only
 carries them, so it happily pulls `linux/amd64` images for your Intel sites even
 though the Pi itself is arm64.
 
+During a home sync, DockerGo also removes previously cached image references
+that no remote site's latest summary needs. It only removes references it has
+tracked in `/var/lib/dockergo/cached-images.json`, and Docker is not asked to
+force-remove an image still used by a local container. Cleanup is skipped for a
+cycle if any remote summary cannot be fetched or validated, so incomplete site
+data cannot cause cached images to be discarded.
+
 ## Hardware
 
 | Part | Detail |
