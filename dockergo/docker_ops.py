@@ -107,7 +107,8 @@ def transfer(local, remote, ref: str, progress: Optional[ProgressCb] = None):
     """Stream an image from the local engine into a remote engine (``save`` -> ``load``).
 
     The tar is spooled to a temp file and streamed into the remote, so large
-    images never have to fit in RAM.
+    images never have to fit in RAM. Verify the loaded image matches the local
+    content-addressed image ID and return that ID for container recreation.
     """
     image = local.images.get(ref)
     with tempfile.NamedTemporaryFile(suffix=".tar") as tar:
@@ -116,8 +117,16 @@ def transfer(local, remote, ref: str, progress: Optional[ProgressCb] = None):
         tar.flush()
         tar.seek(0)
         for event in remote.api.load_image(tar):
+            if isinstance(event, dict) and (event.get("error") or event.get("errorDetail")):
+                raise RuntimeError(f"Image load failed: {event}")
             if progress and isinstance(event, dict) and event.get("stream"):
                 progress(event["stream"].strip(), None)
+    loaded = remote.images.get(ref)
+    if loaded.id != image.id:
+        raise RuntimeError(
+            f"Image verification failed for {ref}: expected {image.id}, got {loaded.id}"
+        )
+    return image.id
 
 
 def containers_using(remote, ref: str) -> list:

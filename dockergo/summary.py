@@ -5,7 +5,7 @@ from __future__ import annotations
 import requests
 
 
-def fetch_pending_images(summary_url: str, timeout: int = 15) -> list:
+def fetch_pending_images(summary_url: str, timeout: int = 180) -> list:
     """GET the summary endpoint and return ``checks.docker_updater.pending_images``.
 
     Raises on network/HTTP errors; callers decide how to surface them.

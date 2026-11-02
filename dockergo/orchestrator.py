@@ -65,13 +65,12 @@ class Orchestrator:
                     break
 
         did_remote = False
-        if not home_visible:
-            for site in self.cfg.sites:
-                if site.home:
-                    continue
-                if site.ssid in visible:
-                    did_remote = True
-                    self._do_remote(site)
+        for site in self.cfg.sites:
+            if site.home:
+                continue
+            if site.ssid in visible:
+                did_remote = True
+                self._do_remote(site)
 
         if not home_visible and not did_remote:
             self.announce("No known networks in range", state=State.OFFLINE,
@@ -129,10 +128,6 @@ class Orchestrator:
 
         for index, ref in enumerate(wanted, 1):
             short = _short(ref)
-            if dk.have_image(self.local, ref):
-                managed.add(ref)
-                self.announce(f"Cached {short}")
-                continue
             self.announce(f"Downloading {short}", headline=f"Downloading {short}",
                           detail=f"{index}/{len(wanted)}", progress=0.0)
             try:
@@ -186,8 +181,9 @@ class Orchestrator:
             self.announce(f"Uploading {short} to {site.name}", headline=f"Uploading {short}",
                           detail=f"{index}/{len(needed)}", progress=(index - 1) / max(1, len(needed)))
             try:
-                dk.transfer(self.local, remote, ref,
-                            progress=lambda text, frac: self.status.set(detail=text[:60]))
+                image_id = dk.transfer(
+                    self.local, remote, ref,
+                    progress=lambda text, frac: self.status.set(detail=text[:60]))
             except Exception as exc:
                 self.announce(f"Upload failed {short}: {exc}", state=State.ERROR)
                 continue
@@ -201,7 +197,7 @@ class Orchestrator:
                 cname = container.attrs.get("Name", "").lstrip("/")
                 self.announce(f"Restarting {cname}", headline=f"Restarting {cname}", detail=short)
                 try:
-                    dk.recreate(remote, container, ref,
+                    dk.recreate(remote, container, image_id,
                                 progress=lambda text, frac: self.status.set(detail=text[:60]))
                     self.announce(f"Restarted {cname}")
                 except Exception as exc:
