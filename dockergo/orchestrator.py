@@ -72,6 +72,12 @@ class Orchestrator:
                 did_remote = True
                 self._do_remote(site)
 
+        if did_remote:
+            visible = self.wifi.scan()
+            for home in homes:
+                if home.ssid in visible and self._connect_home(home):
+                    break
+
         if not home_visible and not did_remote:
             self.announce("No known networks in range", state=State.OFFLINE,
                           headline="No known Wi-Fi", detail="", progress=None, online=False)
@@ -87,7 +93,7 @@ class Orchestrator:
                       headline="Wi-Fi failed", detail=site.ssid, online=False)
         return False
 
-    def _do_home(self, home: Site) -> bool:
+    def _connect_home(self, home: Site) -> bool:
         if not self._connect(home):
             return False
 
@@ -97,6 +103,11 @@ class Orchestrator:
                           headline="VPN failed", detail=home.name, online=False)
             return False
 
+        return True
+
+    def _do_home(self, home: Site) -> bool:
+        if not self._connect_home(home):
+            return False
         self._sync_home(home)
         return True
 

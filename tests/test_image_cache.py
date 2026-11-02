@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from dockergo.config import Config, Site
-from dockergo.docker_ops import load_managed_images, save_managed_images, transfer
+from dockergo.docker_ops import local_client, load_managed_images, save_managed_images, transfer
 from dockergo.orchestrator import Orchestrator
 from dockergo.status import Status
 from dockergo.summary import fetch_pending_images
@@ -22,6 +22,13 @@ class ImageCacheTests(unittest.TestCase):
         orchestrator._local = object()
         return orchestrator
 
+    @patch("dockergo.docker_ops._docker")
+    def test_local_client_allows_long_image_exports(self, docker_sdk):
+        client = local_client()
+
+        docker_sdk.return_value.from_env.assert_called_once_with(timeout=600)
+        self.assertIs(client, docker_sdk.return_value.from_env.return_value)
+
     def test_cycle_processes_visible_remote_after_home_attempt(self):
         for home_connected in (True, False):
             with self.subTest(home_connected=home_connected):
@@ -32,13 +39,68 @@ class ImageCacheTests(unittest.TestCase):
                 workflow.home.return_value = home_connected
                 orchestrator._do_home = workflow.home
                 orchestrator._do_remote = workflow.remote
+                orchestrator._connect_home = workflow.idle_home
 
                 orchestrator.cycle()
 
                 self.assertEqual(workflow.mock_calls, [
                     call.home(self.home),
                     call.remote(self.remote),
+                    call.idle_home(self.home),
                 ])
+
+    def test_cycle_returns_home_only_if_visible_after_remote_work(self):
+        for home_visible in (True, False):
+            with self.subTest(home_visible=home_visible):
+                home = Site("HOME", "home", "password", "", "", home=True,
+                            wireguard_connection="home-vpn")
+                orchestrator = self.make_orchestrator([home, self.remote])
+                orchestrator.wifi = Mock()
+                orchestrator.wifi.scan.side_effect = [
+                    {"remote": 80}, {"home": 90} if home_visible else {"remote": 80},
+                ]
+                orchestrator._do_remote = Mock()
+                orchestrator._sync_home = Mock()
+
+                orchestrator.cycle()
+
+                orchestrator._do_remote.assert_called_once_with(self.remote)
+                orchestrator._sync_home.assert_not_called()
+                self.assertEqual(orchestrator.wifi.scan.call_count, 2)
+                if home_visible:
+                    orchestrator.wifi.connect.assert_called_once_with("home", "password")
+                    orchestrator.wifi.connect_wireguard.assert_called_once_with("home-vpn")
+                else:
+                    orchestrator.wifi.connect.assert_not_called()
+                    orchestrator.wifi.connect_wireguard.assert_not_called()
+
+    def test_cycle_tries_next_visible_home_when_idle_connection_fails(self):
+        second_home = Site("HOME2", "home2", "", "", "", home=True)
+        orchestrator = self.make_orchestrator([self.home, second_home, self.remote])
+        orchestrator.wifi = Mock()
+        orchestrator.wifi.scan.side_effect = [
+            {"remote": 80}, {"home": 90, "home2": 85},
+        ]
+        orchestrator._do_remote = Mock()
+        orchestrator._connect_home = Mock(side_effect=[False, True])
+
+        orchestrator.cycle()
+
+        self.assertEqual(orchestrator._connect_home.call_args_list, [
+            call(self.home), call(second_home),
+        ])
+
+    def test_home_only_cycle_stays_home_without_reconnecting(self):
+        orchestrator = self.make_orchestrator()
+        orchestrator.wifi = Mock()
+        orchestrator.wifi.scan.return_value = {"home": 90}
+        orchestrator._sync_home = Mock()
+
+        orchestrator.cycle()
+
+        orchestrator.wifi.scan.assert_called_once()
+        orchestrator.wifi.connect.assert_called_once_with("home", "")
+        orchestrator._sync_home.assert_called_once_with(self.home)
 
     @patch("dockergo.orchestrator.dk.save_managed_images")
     @patch("dockergo.orchestrator.dk.remove_cached_image")

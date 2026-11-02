@@ -28,7 +28,7 @@ def _docker():
 
 
 def local_client():
-    return _docker().from_env()
+    return _docker().from_env(timeout=600)
 
 
 def remote_client(docker_host: str, timeout: int = 120):
