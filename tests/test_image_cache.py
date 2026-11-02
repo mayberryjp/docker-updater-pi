@@ -4,7 +4,10 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from dockergo.config import Config, Site
-from dockergo.docker_ops import local_client, load_managed_images, save_managed_images, transfer
+from dockergo.docker_ops import (
+    local_client, load_managed_images, prepare_archive, remove_cached_image,
+    save_managed_images, transfer,
+)
 from dockergo.orchestrator import Orchestrator
 from dockergo.status import Status
 from dockergo.summary import fetch_pending_images
@@ -15,6 +18,9 @@ class ImageCacheTests(unittest.TestCase):
         self.home = Site("HOME", "home", "", "", "", home=True)
         self.remote = Site("REMOTE", "remote", "", "", "https://summary")
         self.notifier = Mock()
+        archives = tempfile.TemporaryDirectory()
+        self.addCleanup(archives.cleanup)
+        self.archive_dir = Path(archives.name)
 
     def make_orchestrator(self, sites=None):
         cfg = Config(sites=sites or [self.home, self.remote])
@@ -102,6 +108,7 @@ class ImageCacheTests(unittest.TestCase):
         orchestrator.wifi.connect.assert_called_once_with("home", "")
         orchestrator._sync_home.assert_called_once_with(self.home)
 
+    @patch("dockergo.orchestrator.dk.prepare_archive")
     @patch("dockergo.orchestrator.dk.save_managed_images")
     @patch("dockergo.orchestrator.dk.remove_cached_image")
     @patch("dockergo.orchestrator.dk.pull")
@@ -110,16 +117,19 @@ class ImageCacheTests(unittest.TestCase):
     @patch("dockergo.orchestrator.summary_api.fetch_pending_images",
            return_value=["needed:latest"])
     def test_home_sync_removes_only_no_longer_needed_managed_refs(
-        self, _fetch, _load, pull, remove, save
+        self, _fetch, _load, pull, remove, save, prepare
     ):
         self.make_orchestrator()._sync_home(self.home)
 
         pull.assert_called_once()
         self.assertEqual(pull.call_args.args[1], "needed:latest")
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.args[1], "needed:latest")
         remove.assert_called_once()
         self.assertEqual(remove.call_args.args[1], "stale:latest")
         save.assert_called_once_with({"needed:latest"})
 
+    @patch("dockergo.orchestrator.dk.prepare_archive")
     @patch("dockergo.orchestrator.dk.save_managed_images")
     @patch("dockergo.orchestrator.dk.remove_cached_image")
     @patch("dockergo.orchestrator.dk.pull")
@@ -128,7 +138,7 @@ class ImageCacheTests(unittest.TestCase):
     @patch("dockergo.orchestrator.summary_api.fetch_pending_images",
            side_effect=[["needed:latest"], RuntimeError("unreachable")])
     def test_home_sync_skips_pruning_when_any_summary_fails(
-        self, _fetch, _load, _pull, remove, save
+        self, _fetch, _load, _pull, remove, save, _prepare
     ):
         second_remote = Site("REMOTE2", "remote2", "", "", "https://summary2")
         self.make_orchestrator([self.home, self.remote, second_remote])._sync_home(self.home)
@@ -159,32 +169,129 @@ class ImageCacheTests(unittest.TestCase):
         local = Mock()
         remote = Mock()
         local.images.get.return_value.id = "sha256:expected"
-        local.images.get.return_value.save.return_value = [b"image archive"]
+        local.api.get_image.return_value = [b"image archive"]
         remote.api.load_image.return_value = [{"stream": "Loaded image"}]
         remote.images.get.return_value.id = "sha256:expected"
 
-        self.assertEqual(transfer(local, remote, "app:latest"), "sha256:expected")
+        prepare_archive(local, "app:latest", self.archive_dir)
+        self.assertEqual(
+            transfer(local, remote, "app:latest", archive_dir=self.archive_dir),
+            "sha256:expected",
+        )
         remote.images.get.assert_called_once_with("app:latest")
+
+    def test_archive_is_reused_across_home_syncs_and_remote_sites(self):
+        local = Mock()
+        local.images.get.return_value.id = "sha256:expected"
+        local.api.get_image.return_value = [b"image ", b"archive"]
+
+        archive = prepare_archive(local, "app:latest", self.archive_dir)
+        self.assertEqual(prepare_archive(local, "app:latest", self.archive_dir), archive)
+        for remote in (Mock(), Mock()):
+            remote.images.get.return_value.id = "sha256:expected"
+            payloads = []
+
+            def load_image(stream):
+                payloads.append(stream.read())
+                return []
+
+            remote.api.load_image.side_effect = load_image
+            self.assertEqual(
+                transfer(local, remote, "app:latest", archive_dir=self.archive_dir),
+                "sha256:expected",
+            )
+            self.assertEqual(payloads, [b"image archive"])
+
+        local.api.get_image.assert_called_once_with("app:latest")
+
+    def test_changed_image_gets_new_archive_and_removes_old_version(self):
+        local = Mock()
+        local.images.get.return_value.id = "sha256:old"
+        local.api.get_image.return_value = [b"old archive"]
+        old = prepare_archive(local, "app:latest", self.archive_dir)
+
+        local.images.get.return_value.id = "sha256:new"
+        local.api.get_image.return_value = [b"new archive"]
+        new = prepare_archive(local, "app:latest", self.archive_dir)
+
+        self.assertNotEqual(old, new)
+        self.assertFalse(old.exists())
+        self.assertEqual(new.read_bytes(), b"new archive")
+        self.assertEqual(local.api.get_image.call_count, 2)
+
+    def test_failed_export_keeps_old_archive_and_removes_partial_file(self):
+        local = Mock()
+        local.images.get.return_value.id = "sha256:old"
+        local.api.get_image.return_value = [b"old archive"]
+        old = prepare_archive(local, "app:latest", self.archive_dir)
+        local.images.get.return_value.id = "sha256:new"
+
+        def broken_export(_ref):
+            yield b"partial archive"
+            raise RuntimeError("export interrupted")
+
+        local.api.get_image.side_effect = broken_export
+        with self.assertRaisesRegex(RuntimeError, "export interrupted"):
+            prepare_archive(local, "app:latest", self.archive_dir)
+
+        self.assertEqual(list(self.archive_dir.iterdir()), [old])
+        with self.assertRaisesRegex(RuntimeError, "Archive not prepared"):
+            transfer(local, Mock(), "app:latest", archive_dir=self.archive_dir)
+
+    def test_export_rejects_reference_changing_during_save(self):
+        local = Mock()
+        local.images.get.side_effect = [Mock(id="sha256:old"), Mock(id="sha256:new")]
+        local.api.get_image.return_value = [b"archive"]
+
+        with self.assertRaisesRegex(RuntimeError, "Image changed during export"):
+            prepare_archive(local, "app:latest", self.archive_dir)
+        self.assertEqual(list(self.archive_dir.iterdir()), [])
+
+    def test_transfer_does_not_export_when_archive_is_missing(self):
+        local = Mock()
+        local.images.get.return_value.id = "sha256:expected"
+        remote = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "Archive not prepared"):
+            transfer(local, remote, "app:latest", archive_dir=self.archive_dir)
+        local.api.get_image.assert_not_called()
+        remote.api.load_image.assert_not_called()
+
+    def test_removing_cached_reference_removes_only_its_archives(self):
+        local = Mock()
+        local.images.get.return_value.id = "sha256:expected"
+        local.api.get_image.return_value = [b"archive"]
+        removed = prepare_archive(local, "app:latest", self.archive_dir)
+        kept = prepare_archive(local, "other:latest", self.archive_dir)
+
+        remove_cached_image(local, "app:latest", self.archive_dir)
+
+        local.images.get.return_value.remove.assert_called_once_with(force=False)
+        self.assertFalse(removed.exists())
+        self.assertTrue(kept.exists())
 
     def test_transfer_rejects_loaded_image_id_mismatch(self):
         local = Mock()
         remote = Mock()
         local.images.get.return_value.id = "sha256:expected"
-        local.images.get.return_value.save.return_value = [b"image archive"]
+        local.api.get_image.return_value = [b"image archive"]
         remote.api.load_image.return_value = []
         remote.images.get.return_value.id = "sha256:old"
 
+        prepare_archive(local, "app:latest", self.archive_dir)
         with self.assertRaisesRegex(RuntimeError, "Image verification failed"):
-            transfer(local, remote, "app:latest")
+            transfer(local, remote, "app:latest", archive_dir=self.archive_dir)
 
     def test_transfer_rejects_load_error(self):
         local = Mock()
         remote = Mock()
-        local.images.get.return_value.save.return_value = [b"image archive"]
+        local.images.get.return_value.id = "sha256:expected"
+        local.api.get_image.return_value = [b"image archive"]
         remote.api.load_image.return_value = [{"error": "load failed"}]
 
+        prepare_archive(local, "app:latest", self.archive_dir)
         with self.assertRaisesRegex(RuntimeError, "Image load failed"):
-            transfer(local, remote, "app:latest")
+            transfer(local, remote, "app:latest", archive_dir=self.archive_dir)
         remote.images.get.assert_not_called()
 
     @patch("dockergo.orchestrator.dk.recreate")

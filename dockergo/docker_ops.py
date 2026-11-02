@@ -4,7 +4,8 @@ Because the Pi runs a real Docker engine, this replaces the firmware's hand-roll
 Registry-V2 client, content-addressed blob store and OCI archive assembly:
 
 * **pull** images into the local engine at home (the local store *is* the cache);
-* **transfer** a cached image into a remote engine (``save`` -> ``load``);
+* **prepare** reusable image archives at home;
+* **transfer** prepared archives into remote engines (``load``);
 * **recreate** affected containers so they actually run the new image.
 
 ``import docker`` is deferred so the UI can be previewed without the SDK installed.
@@ -12,6 +13,7 @@ Registry-V2 client, content-addressed blob store and OCI archive assembly:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -20,6 +22,7 @@ from typing import Callable, Optional
 
 ProgressCb = Callable[[str, Optional[float]], None]
 CACHE_STATE_PATH = Path("/var/lib/dockergo/cached-images.json")
+ARCHIVE_DIR = Path("/var/lib/dockergo/image-archives")
 
 
 def _docker():
@@ -75,14 +78,16 @@ def save_managed_images(refs: set[str], path: Path = CACHE_STATE_PATH):
             temp_path.unlink()
 
 
-def remove_cached_image(client, ref: str):
+def remove_cached_image(client, ref: str, archive_dir: Path = ARCHIVE_DIR):
     """Remove a managed image ref without forcing removal of in-use images."""
     from docker.errors import ImageNotFound
     try:
         image = client.images.get(ref)
     except ImageNotFound:
-        return
-    image.remove(force=False)
+        image = None
+    if image is not None:
+        image.remove(force=False)
+    _prune_archives(ref, archive_dir)
 
 
 def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None):
@@ -103,19 +108,50 @@ def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None)
     return client.images.get(ref)
 
 
-def transfer(local, remote, ref: str, progress: Optional[ProgressCb] = None):
-    """Stream an image from the local engine into a remote engine (``save`` -> ``load``).
+def _archive_path(ref: str, image_id: str, archive_dir: Path) -> Path:
+    ref_key = hashlib.sha256(ref.encode("utf-8")).hexdigest()
+    image_key = hashlib.sha256(image_id.encode("utf-8")).hexdigest()
+    return archive_dir / f"{ref_key}-{image_key}.tar"
 
-    The tar is spooled to a temp file and streamed into the remote, so large
-    images never have to fit in RAM. Verify the loaded image matches the local
-    content-addressed image ID and return that ID for container recreation.
-    """
+
+def _prune_archives(ref: str, archive_dir: Path, keep: Optional[Path] = None):
+    ref_key = hashlib.sha256(ref.encode("utf-8")).hexdigest()
+    for archive in archive_dir.glob(f"{ref_key}-*.tar"):
+        if archive != keep:
+            archive.unlink()
+
+
+def prepare_archive(client, ref: str, archive_dir: Path = ARCHIVE_DIR) -> Path:
+    """Export a reference once per exact image ID, publishing only complete archives."""
+    image = client.images.get(ref)
+    archive = _archive_path(ref, image.id, archive_dir)
+    if archive.is_file():
+        return archive
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=archive_dir, suffix=".tmp", delete=False) as tar:
+            temp_path = Path(tar.name)
+            for chunk in client.api.get_image(ref):
+                tar.write(chunk)
+        if client.images.get(ref).id != image.id:
+            raise RuntimeError(f"Image changed during export: {ref}")
+        os.replace(temp_path, archive)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+    _prune_archives(ref, archive_dir, keep=archive)
+    return archive
+
+
+def transfer(local, remote, ref: str, progress: Optional[ProgressCb] = None,
+             archive_dir: Path = ARCHIVE_DIR):
+    """Load a prepared archive remotely and return its verified exact image ID."""
     image = local.images.get(ref)
-    with tempfile.NamedTemporaryFile(suffix=".tar") as tar:
-        for chunk in image.save(named=True):
-            tar.write(chunk)
-        tar.flush()
-        tar.seek(0)
+    archive = _archive_path(ref, image.id, archive_dir)
+    if not archive.is_file():
+        raise RuntimeError(f"Archive not prepared for {ref}; run home sync first")
+    with archive.open("rb") as tar:
         for event in remote.api.load_image(tar):
             if isinstance(event, dict) and (event.get("error") or event.get("errorDetail")):
                 raise RuntimeError(f"Image load failed: {event}")

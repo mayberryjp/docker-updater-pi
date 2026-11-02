@@ -19,24 +19,40 @@ flowchart TD
     B --> C{Home SSID visible?}
     C -- yes --> D[Connect HOME] --> E[GET every site summary] --> F[Pull UNION into local Docker]
     C -- no --> G
-    F --> G{Remote SSID visible?}
-    G -- yes --> H[Connect REMOTE] --> I[GET its summary] --> J[save->load cached images] --> K[Recreate containers]
+    F --> P[Prepare reusable image archives] --> G{Remote SSID visible?}
+    G -- yes --> H[Connect REMOTE] --> I[GET its summary] --> J[Load prepared archives] --> K[Recreate containers]
     G -- no --> L[Idle]
     K --> L
     L --> B
 ```
 
 The Pi's **local Docker image store is the cache** — images pulled at home stay
-there until applied at a remote site. The Pi never *runs* these images, it only
+there while remote sites still need them. The Pi never *runs* these images, it only
 carries them, so it happily pulls `linux/amd64` images for your Intel sites even
 though the Pi itself is arm64.
+
+At home, DockerGo checks each requested reference against the registry and
+exports it to `/var/lib/dockergo/image-archives`. Archives are keyed by the
+reference and exact image ID: unchanged images reuse their archive across
+home syncs and remote sites. New image IDs get new archives, and old versions
+are removed only after the replacement export succeeds. Failed exports are
+never published as ready archives.
+
+Remote sites receive and load these prepared archives; the Pi does not export
+again at each site. The loaded image ID must match the cached image before
+containers are recreated using that exact ID. If an archive is missing, the
+transfer is skipped until a home sync prepares it. No remote configuration
+changes are required. Allow disk space for both Docker's image store and the
+uncompressed archives; the first home sync after upgrading prepares archives
+for images already cached.
 
 During a home sync, DockerGo also removes previously cached image references
 that no remote site's latest summary needs. It only removes references it has
 tracked in `/var/lib/dockergo/cached-images.json`, and Docker is not asked to
 force-remove an image still used by a local container. Cleanup is skipped for a
 cycle if any remote summary cannot be fetched or validated, so incomplete site
-data cannot cause cached images to be discarded.
+data cannot cause cached images to be discarded. Removing a managed image
+reference also removes its reusable archives.
 
 ## Hardware
 

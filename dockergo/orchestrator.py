@@ -148,6 +148,13 @@ class Orchestrator:
                 self.announce(f"Downloaded {short}")
             except Exception as exc:
                 self.announce(f"Download failed {short}: {exc}", state=State.ERROR)
+                continue
+            self.announce(f"Preparing {short}", headline=f"Preparing {short}",
+                          detail=f"{index}/{len(wanted)}", progress=None)
+            try:
+                dk.prepare_archive(self.local, ref)
+            except Exception as exc:
+                self.announce(f"Archive failed {short}: {exc}", state=State.ERROR)
 
         if cache_state_available:
             if summaries_complete:
