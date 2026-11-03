@@ -56,6 +56,8 @@ seconds without byte progress. Upload bytes measure data handed to the HTTP tran
 remote acknowledgements. Once the payload has been handed off, the screen
 shows **Loading/verifying**: 100% bytes does not mean the image is ready.
 Containers are only recreated after the remote image ID is verified.
+Uploads keep an exact HTTP Content-Length for archives larger than 2 GiB,
+including on 32-bit Python, without reading the whole archive into memory.
 
 Home downloads also report Docker's per-layer byte counts: compressed registry
 downloads and uncompressed extraction are tracked **separately**, so extraction

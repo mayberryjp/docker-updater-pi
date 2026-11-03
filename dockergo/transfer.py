@@ -146,7 +146,9 @@ class ArchiveReader:
         self.reported = 0
         self.last_report = time.monotonic()
 
-    def __len__(self):
+    @property
+    def len(self) -> int:
+        # Requests accepts .len without the Py_ssize_t limit of __len__ on 32-bit Python.
         return self.total
 
     def read(self, size=-1):

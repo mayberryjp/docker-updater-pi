@@ -1,6 +1,7 @@
 import io
 import json
 import multiprocessing
+import sys
 import tempfile
 import threading
 import time
@@ -158,12 +159,29 @@ class TransferTests(unittest.TestCase):
         size = 2 * 1024 * 1024 + 17
         report = Mock()
         reader = ArchiveReader(io.BytesIO(b"x" * size), size, report)
-        self.assertEqual(len(reader), size)
+        self.assertEqual(reader.len, size)
         self.assertEqual(len(reader.read()), 1024 * 1024)
         self.assertEqual(len(reader.read(size)), 1024 * 1024)
         self.assertEqual(len(reader.read()), 17)
         self.assertEqual(reader.read(), b"")
         self.assertEqual([c.args[0] for c in report.call_args_list], [1048576, 2097152, size])
+
+    def test_reader_prepares_large_content_lengths_without_reading_payload(self):
+        import requests
+
+        for size in (1, 2**31 - 1, 2**31, 3256345600, 6383646208, sys.maxsize + 1):
+            with self.subTest(size=size):
+                stream, report = Mock(), Mock()
+                reader = ArchiveReader(stream, size, report)
+                self.assertTrue(reader)
+                request = requests.Request(
+                    "POST", "http://localhost/images/load", data=reader,
+                ).prepare()
+                self.assertEqual(request.headers["Content-Length"], str(size))
+                self.assertNotIn("Transfer-Encoding", request.headers)
+                self.assertIs(request.body, reader)
+                stream.read.assert_not_called()
+                report.assert_not_called()
 
     def test_lcd_renders_rate_bytes_and_inactivity(self):
         from PIL import ImageDraw
