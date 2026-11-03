@@ -92,28 +92,32 @@ class StatusScreen:
                    font=self.f_body, fill=DIM, anchor="lt")
 
         # --- progress bar ---
-        pb_y = int(h * 0.52)
+        pb_y = int(h * (0.64 if s.transfer is not None else 0.52))
         if s.progress is not None:
             p = max(0.0, min(1.0, s.progress))
-            d.rectangle([12, pb_y, w - 12, pb_y + 16], fill=BAR_BG)
-            d.rectangle([12, pb_y, 12 + int((w - 24) * p), pb_y + 16], fill=accent)
-            d.text((w - 12, pb_y - 3), f"{int(p * 100)}%", font=self.f_small, fill=DIM, anchor="rb")
+            bar_right = w - 72
+            d.rectangle([12, pb_y, bar_right, pb_y + 16], fill=BAR_BG)
+            d.rectangle([12, pb_y, 12 + int((bar_right - 12) * p), pb_y + 16], fill=accent)
+            d.text((w - 12, pb_y + 8), f"{int(p * 100)}%", font=self.f_small, fill=FG, anchor="rm")
 
         # --- scrolling log ---
         log_top = int(h * 0.6)
         if s.transfer is not None:
             t = s.transfer
-            lines = (
-                f"{t.current / 1048576:.1f}/{t.total / 1048576:.1f} MiB"
-                f"  {t.rate / 1048576:.2f} MiB/s",
-                f"elapsed {int(t.elapsed)}s  idle {int(t.idle)}s",
+            byte_text = f"{t.current:,} / {t.total:,} B" if t.total is not None else (
+                f"{t.current:,} B copied (total unknown)"
             )
-            line_h = self.f_small.getbbox("Ag")[3] + 3
-            for i, text in enumerate(lines):
-                d.text((12, log_top + i * line_h),
+            lines = (
+                byte_text,
+                f"{t.rate / 1048576:.2f} MiB/s ({t.rate:,.0f} B/s)",
+                f"elapsed {int(t.elapsed)}s  no bytes {int(t.idle)}s",
+            )
+            for text, relative_y in zip(lines, (0.44, 0.50, 0.56)):
+                d.text((12, int(h * relative_y)),
                        _ellipsize(text, self.f_small, w - 24, d),
-                       font=self.f_small, fill=FG, anchor="lt")
-            log_top += line_h * 2 + 8
+                       font=self.f_small,
+                       fill=(240, 200, 0) if t.idle >= 5 else FG, anchor="lt")
+            log_top = int(h * 0.74)
         d.line([12, log_top - 6, w - 12, log_top - 6], fill=(34, 38, 48))
         line_h = self.f_small.getbbox("Ag")[3] + 3
         max_lines = max(1, (h - log_top - 4) // line_h)

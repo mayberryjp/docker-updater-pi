@@ -48,12 +48,23 @@ for images already cached.
 
 At each remote site, prepared archives are uploaded **smallest first**, by
 actual archive byte size (not registry compressed size). Missing archives are
-reported and skipped. The LCD shows per-image byte progress, MiB/s, elapsed
-time and time since activity; throughput updates once per second and drops to
-zero during a stall. Bytes measure data handed to the HTTP transport, not
+reported and skipped. The LCD has a dedicated, prominent byte counter,
+MiB/s and B/s, elapsed time, and time since bytes last changed. Counters appear
+immediately and refresh once per second, including when an operation is blocked;
+the rate drops to zero during a stall and the counters turn yellow after five
+seconds without byte progress. Upload bytes measure data handed to the HTTP transport, not
 remote acknowledgements. Once the payload has been handed off, the screen
 shows **Loading/verifying**: 100% bytes does not mean the image is ready.
 Containers are only recreated after the remote image ID is verified.
+
+Home downloads also report Docker's per-layer byte counts: compressed registry
+downloads and uncompressed extraction are tracked **separately**, so extraction
+does not reset or inflate download counters. Docker reveals layer totals as it
+discovers them, so the displayed total/percentage may change during a pull.
+Archive preparation shows actual bytes written to the tar file. Its exact total
+is unknown until export finishes, so it shows `total unknown` rather than a
+made-up percentage. Cached archives show their verified local file size without
+exporting again.
 
 Each transfer runs in a disposable worker process. No upload byte progress for
 120 seconds aborts the upload. After the payload is handed off, daemon loading
@@ -65,11 +76,20 @@ Disconnecting cannot cancel work already accepted by Docker; the remote daemon
 may finish a load after DockerGo has timed out.
 
 Diagnostics are written to `/var/log/dockergo/dockergo.log` and stderr
-(systemd journal). The file rotates at 5 MiB with three backups. Logs include
-upload order/sizes, transfer statistics every ten seconds, daemon output,
-verification results, and upload exception tracebacks. Use
+(systemd journal). The file rotates at 5 MiB with three backups. The file includes
+DEBUG-level per-layer Docker events (layer ID, status, current and total bytes),
+while stderr remains INFO-level. Neither telemetry nor these diagnostics is
+sent to Discord; Discord still receives only high-level announcements.
+Logs include pull platform/image IDs, archive lookup/reuse and temporary paths,
+partial export cleanup, upload order/sizes, timeout settings, worker PID/exit
+status, daemon connection/load/verification stages and output, and full exception
+tracebacks. Exact-byte transfer statistics are recorded **every second**, even
+when no bytes move, plus initial/final counters for short operations.
+Display render/write failures are logged rather than silently ignored. Use
 `sudo tail -f /var/log/dockergo/dockergo.log` to watch, or override the path
 with `--log-file dockergo.log` when developing without root.
+After deployment, look for `Detailed byte telemetry enabled` at startup to
+confirm the rebuilt package is running.
 
 During a home sync, DockerGo also removes previously cached image references
 that no remote site's latest summary needs. It only removes references it has

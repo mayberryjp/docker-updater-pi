@@ -13,8 +13,11 @@ def configure_logging(path: str):
     )
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger("dockergo")
-    logger.setLevel(logging.INFO)
-    for output in (handler, logging.StreamHandler()):
+    logger.setLevel(logging.DEBUG)
+    handler.setLevel(logging.DEBUG)
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    for output in (handler, console):
         output.setFormatter(formatter)
         logger.addHandler(output)
     return logger

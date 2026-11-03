@@ -202,7 +202,7 @@ class ImageCacheTests(unittest.TestCase):
             )
             self.assertEqual(payloads, [b"image archive"])
 
-        local.api.get_image.assert_called_once_with("app:latest")
+        local.api.get_image.assert_called_once_with("app:latest", chunk_size=64 * 1024)
 
     def test_changed_image_gets_new_archive_and_removes_old_version(self):
         local = Mock()
@@ -226,7 +226,7 @@ class ImageCacheTests(unittest.TestCase):
         old = prepare_archive(local, "app:latest", self.archive_dir)
         local.images.get.return_value.id = "sha256:new"
 
-        def broken_export(_ref):
+        def broken_export(_ref, **_kwargs):
             yield b"partial archive"
             raise RuntimeError("export interrupted")
 

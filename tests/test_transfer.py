@@ -102,11 +102,15 @@ class TransferTests(unittest.TestCase):
             self.assertEqual({p.pid for p in multiprocessing.active_children()}, before)
 
     def test_real_sdk_upload_content_length_payload_and_verification(self):
+        updates = []
         with self.assertLogs("dockergo.transfer", level="INFO") as logs:
-            result = self.run_upload(self.server())
+            result = self.run_upload(self.server(), progress=updates.append)
         self.assertEqual(result, "sha256:expected")
         self.assertEqual(bytes(self.received), self.archive.read_bytes())
         self.assertTrue(any("Verified upload" in entry for entry in logs.output))
+        self.assertEqual(updates[0].current, 0)
+        self.assertEqual(updates[-1].current, len(self.received))
+        self.assertTrue(any("stall_timeout_s=120" in entry for entry in logs.output))
 
     def test_blocked_upload_is_killed_and_rate_drops_to_zero(self):
         self.archive.write_bytes(b"x" * (16 * 1024 * 1024))
@@ -183,8 +187,9 @@ class TransferTests(unittest.TestCase):
                 frame = StatusScreen(size).render(status.snapshot())
             self.assertEqual(frame.size, size)
             text = [c.args[1] for c in drawings[0].text.call_args_list]
-            self.assertIn("2.0/2.0 MiB  0.00 MiB/s", text)
-            self.assertIn("elapsed 12s  idle 4s", text)
+            self.assertIn("2,097,152 / 2,097,152 B", text)
+            self.assertIn("0.00 MiB/s (0 B/s)", text)
+            self.assertIn("elapsed 12s  no bytes 4s", text)
 
     @patch("dockergo.docker_ops.run_transfer", return_value="sha256:expected")
     @patch("dockergo.docker_ops.prepared_archive")

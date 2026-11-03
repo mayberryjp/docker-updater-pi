@@ -60,8 +60,8 @@ class Orchestrator:
 
     def _transfer_progress(self, update: TransferProgress):
         self.status.set(
-            transfer=update, progress=update.current / update.total,
-            detail=update.phase,
+            transfer=update, progress=update.fraction,
+            detail=f"{update.phase}: {update.detail}" if update.detail else update.phase,
         )
 
     def cycle(self):
@@ -155,18 +155,22 @@ class Orchestrator:
                           detail=f"{index}/{len(wanted)}", progress=0.0)
             try:
                 dk.pull(self.local, ref, self.cfg.platform_for(home),
-                        progress=lambda text, frac: self.status.set(detail=text[:60], progress=frac))
+                        transfer_progress=self._transfer_progress)
                 managed.add(ref)
                 self.announce(f"Downloaded {short}")
             except Exception as exc:
                 self.announce(f"Download failed {short}: {exc}", state=State.ERROR)
                 continue
+            finally:
+                self.status.set(transfer=None)
             self.announce(f"Preparing {short}", headline=f"Preparing {short}",
                           detail=f"{index}/{len(wanted)}", progress=None)
             try:
-                dk.prepare_archive(self.local, ref)
+                dk.prepare_archive(self.local, ref, progress=self._transfer_progress)
             except Exception as exc:
                 self.announce(f"Archive failed {short}: {exc}", state=State.ERROR)
+            finally:
+                self.status.set(transfer=None)
 
         if cache_state_available:
             if summaries_complete:

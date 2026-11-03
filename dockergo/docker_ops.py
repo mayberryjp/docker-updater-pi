@@ -15,13 +15,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .transfer import ArchiveReader, TransferProgress, run_transfer
+from .transfer import ArchiveReader, ProgressReporter, TransferProgress, run_transfer
 
+LOG = logging.getLogger(__name__)
 ProgressCb = Callable[[str, Optional[float]], None]
 CACHE_STATE_PATH = Path("/var/lib/dockergo/cached-images.json")
 ARCHIVE_DIR = Path("/var/lib/dockergo/image-archives")
@@ -92,22 +95,82 @@ def remove_cached_image(client, ref: str, archive_dir: Path = ARCHIVE_DIR):
     _prune_archives(ref, archive_dir)
 
 
-def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None):
-    """Pull an image, reporting coarse 0..1 progress aggregated across layers."""
+def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None, *,
+         transfer_progress: Optional[Callable[[TransferProgress], None]] = None):
+    """Track registry downloads separately from the daemon's uncompressed extraction."""
     from docker.errors import APIError
-    layers: dict = {}
-    for event in client.api.pull(ref, platform=platform, stream=True, decode=True):
-        if "error" in event:
-            raise APIError(event["error"])
-        layer_id = event.get("id")
-        detail = event.get("progressDetail") or {}
-        if layer_id and detail.get("total"):
-            layers[layer_id] = (detail.get("current", 0), detail["total"])
-        if progress and layers:
-            current = sum(c for c, _ in layers.values())
-            total = sum(t for _, t in layers.values())
-            progress(event.get("status", ""), (current / total) if total else None)
-    return client.images.get(ref)
+    downloads: dict[str, tuple[int, int]] = {}
+    extractions: dict[str, tuple[int, int]] = {}
+    last_events: dict[str, tuple[str, int, float]] = {}
+    LOG.info("Pull requested: ref=%s platform=%s", ref, platform)
+    with ProgressReporter(LOG, ref, "Waiting for registry", transfer_progress) as meter:
+        events = client.api.pull(ref, platform=platform, stream=True, decode=True)
+        try:
+            for event in events:
+                if event.get("error") or event.get("errorDetail"):
+                    raise APIError(event.get("error") or str(event["errorDetail"]))
+                layer_id = event.get("id", "")
+                status = event.get("status", "")
+                detail = event.get("progressDetail") or {}
+                current = int(detail.get("current") or 0)
+                total = int(detail.get("total") or 0)
+                if layer_id and total and status in ("Downloading", "Extracting"):
+                    layers = downloads if status == "Downloading" else extractions
+                    previous, previous_total = layers.get(layer_id, (0, 0))
+                    layers[layer_id] = (max(previous, current), max(previous_total, total))
+                if status in ("Download complete", "Pull complete") and layer_id in downloads:
+                    _, size = downloads[layer_id]
+                    downloads[layer_id] = (size, size)
+                if status == "Pull complete" and layer_id in extractions:
+                    _, size = extractions[layer_id]
+                    extractions[layer_id] = (size, size)
+                if status == "Download complete" and layer_id in downloads:
+                    current, total = downloads[layer_id]
+                elif status == "Pull complete" and layer_id in extractions:
+                    current, total = extractions[layer_id]
+                now = time.monotonic()
+                previous_event = last_events.get(layer_id)
+                if (previous_event is None or status != previous_event[0]
+                        or current - previous_event[1] >= 1024 * 1024
+                        or now - previous_event[2] >= 1):
+                    LOG.debug(
+                        "Pull event: ref=%s layer=%s status=%s current_bytes=%d total_bytes=%s",
+                        ref, layer_id or "-", status, current, total or "unknown",
+                    )
+                    last_events[layer_id] = (status, current, now)
+                if status == "Downloading" or any(c < t for c, t in downloads.values()):
+                    phase, layers = "Downloading", downloads
+                elif extractions:
+                    phase, layers = "Extracting", extractions
+                elif downloads:
+                    phase, layers = "Downloading", downloads
+                else:
+                    phase, layers = "Waiting for registry", downloads
+                copied = sum(c for c, _ in layers.values())
+                known_total = sum(t for _, t in layers.values()) or None
+                meter.update(
+                    phase=phase, current=copied, total=known_total,
+                    detail=f"{status} {layer_id} {current}/{total or '?'} B".strip(),
+                )
+                if progress:
+                    progress(status, copied / known_total if known_total else None)
+        finally:
+            close = getattr(events, "close", None)
+            if close is not None:
+                close()
+        meter.update(phase="Checking downloaded image")
+        image = client.images.get(ref)
+        downloaded = sum(c for c, _ in downloads.values())
+        meter.update(
+            phase="Download complete", current=downloaded,
+            total=sum(t for _, t in downloads.values()) or None,
+            detail=f"{len(downloads)} downloaded layer(s); {len(extractions)} extracted layer(s)",
+        )
+        LOG.info(
+            "Pull complete: ref=%s image_id=%s downloaded_bytes=%d extracted_bytes=%d",
+            ref, image.id, downloaded, sum(c for c, _ in extractions.values()),
+        )
+        return image
 
 
 def _archive_path(ref: str, image_id: str, archive_dir: Path) -> Path:
@@ -120,30 +183,54 @@ def _prune_archives(ref: str, archive_dir: Path, keep: Optional[Path] = None):
     ref_key = hashlib.sha256(ref.encode("utf-8")).hexdigest()
     for archive in archive_dir.glob(f"{ref_key}-*.tar"):
         if archive != keep:
+            LOG.info("Removing stale archive: ref=%s archive=%s bytes=%d",
+                     ref, archive, archive.stat().st_size)
             archive.unlink()
 
 
-def prepare_archive(client, ref: str, archive_dir: Path = ARCHIVE_DIR) -> Path:
+def prepare_archive(client, ref: str, archive_dir: Path = ARCHIVE_DIR, *,
+                    progress: Optional[Callable[[TransferProgress], None]] = None) -> Path:
     """Export a reference once per exact image ID, publishing only complete archives."""
-    image = client.images.get(ref)
-    archive = _archive_path(ref, image.id, archive_dir)
-    if archive.is_file():
+    with ProgressReporter(LOG, ref, "Inspecting cached image", progress) as meter:
+        image = client.images.get(ref)
+        archive = _archive_path(ref, image.id, archive_dir)
+        LOG.info("Archive lookup: ref=%s image_id=%s archive=%s", ref, image.id, archive)
+        if archive.is_file():
+            size = archive.stat().st_size
+            meter.update(phase="Archive cached", current=size, total=size)
+            LOG.info("Reusing archive: ref=%s image_id=%s total_bytes=%d", ref, image.id, size)
+            return archive
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = None
+        try:
+            meter.update(phase="Preparing archive")
+            with tempfile.NamedTemporaryFile(dir=archive_dir, suffix=".tmp", delete=False) as tar:
+                temp_path = Path(tar.name)
+                chunks = client.api.get_image(ref, chunk_size=64 * 1024)
+                LOG.info("Export started: ref=%s image_id=%s temporary_archive=%s",
+                         ref, image.id, temp_path)
+                try:
+                    for chunk in chunks:
+                        tar.write(chunk)
+                        meter.update(current=tar.tell())
+                finally:
+                    close = getattr(chunks, "close", None)
+                    if close is not None:
+                        close()
+            meter.update(phase="Checking export", total=meter.current)
+            if client.images.get(ref).id != image.id:
+                raise RuntimeError(f"Image changed during export: {ref}")
+            os.replace(temp_path, archive)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                LOG.info("Removing partial export: ref=%s archive=%s bytes=%d",
+                         ref, temp_path, temp_path.stat().st_size)
+                temp_path.unlink()
+        _prune_archives(ref, archive_dir, keep=archive)
+        meter.update(phase="Archive ready", total=archive.stat().st_size)
+        LOG.info("Export complete: ref=%s image_id=%s archive=%s total_bytes=%d",
+                 ref, image.id, archive, meter.current)
         return archive
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=archive_dir, suffix=".tmp", delete=False) as tar:
-            temp_path = Path(tar.name)
-            for chunk in client.api.get_image(ref):
-                tar.write(chunk)
-        if client.images.get(ref).id != image.id:
-            raise RuntimeError(f"Image changed during export: {ref}")
-        os.replace(temp_path, archive)
-    finally:
-        if temp_path is not None and temp_path.exists():
-            temp_path.unlink()
-    _prune_archives(ref, archive_dir, keep=archive)
-    return archive
 
 
 def prepared_archive(local, ref: str, archive_dir: Path = ARCHIVE_DIR) -> Path:
@@ -172,10 +259,15 @@ def transfer(local, remote, ref: str,
 
 
 def _load_archive(remote, ref: str, image_id: str, archive: Path,
-                  report: Callable[[int], None], event: Callable[[str], None]):
+                  report: Callable[[int], None], event: Callable[[str], None], *,
+                  stage: Optional[Callable[[str], None]] = None):
     with archive.open("rb") as tar:
         reader = ArchiveReader(tar, archive.stat().st_size, report)
+        if stage:
+            stage("Uploading")
         events = remote.api.load_image(reader)
+        if stage:
+            stage("Loading/verifying")
         try:
             for item in events:
                 if isinstance(item, dict) and (item.get("error") or item.get("errorDetail")):
@@ -186,6 +278,8 @@ def _load_archive(remote, ref: str, image_id: str, archive: Path,
             close = getattr(events, "close", None)
             if close is not None:
                 close()
+    if stage:
+        stage("Verifying image")
     loaded = remote.images.get(ref)
     if loaded.id != image_id:
         raise RuntimeError(

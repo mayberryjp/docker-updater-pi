@@ -44,6 +44,11 @@ def main(argv=None) -> int:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
 
+    logger.info(
+        "Detailed byte telemetry enabled: Python=%s entrypoint=%s log_file=%s",
+        sys.version.split()[0], __file__, args.log_file,
+    )
+
     status = Status(cfg.device_name)
     display = DisplayLoop(status, device=args.fb, mock=args.mock_display)
     display.start()
