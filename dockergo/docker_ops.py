@@ -20,6 +20,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
+from .transfer import ArchiveReader, TransferProgress, run_transfer
+
 ProgressCb = Callable[[str, Optional[float]], None]
 CACHE_STATE_PATH = Path("/var/lib/dockergo/cached-images.json")
 ARCHIVE_DIR = Path("/var/lib/dockergo/image-archives")
@@ -144,25 +146,52 @@ def prepare_archive(client, ref: str, archive_dir: Path = ARCHIVE_DIR) -> Path:
     return archive
 
 
-def transfer(local, remote, ref: str, progress: Optional[ProgressCb] = None,
-             archive_dir: Path = ARCHIVE_DIR):
-    """Load a prepared archive remotely and return its verified exact image ID."""
+def prepared_archive(local, ref: str, archive_dir: Path = ARCHIVE_DIR) -> Path:
     image = local.images.get(ref)
     archive = _archive_path(ref, image.id, archive_dir)
     if not archive.is_file():
         raise RuntimeError(f"Archive not prepared for {ref}; run home sync first")
+    return archive
+
+
+def transfer(local, remote, ref: str,
+             progress: Optional[Callable[[TransferProgress], None]] = None,
+             archive_dir: Path = ARCHIVE_DIR, *, stall_timeout: int = 120,
+             load_timeout: int = 600, total_timeout: int = 7200,
+             docker_host: Optional[str] = None):
+    """Stream an archive with hard deadlines and verify before recreating containers."""
+    archive = prepared_archive(local, ref, archive_dir)
+    image_id = local.images.get(ref).id
+    if archive != _archive_path(ref, image_id, archive_dir):
+        raise RuntimeError(f"Image changed before transfer: {ref}")
+    return run_transfer(
+        docker_host or remote.api.base_url, ref, image_id, archive, progress,
+        stall_timeout=stall_timeout, load_timeout=load_timeout,
+        total_timeout=total_timeout,
+    )
+
+
+def _load_archive(remote, ref: str, image_id: str, archive: Path,
+                  report: Callable[[int], None], event: Callable[[str], None]):
     with archive.open("rb") as tar:
-        for event in remote.api.load_image(tar):
-            if isinstance(event, dict) and (event.get("error") or event.get("errorDetail")):
-                raise RuntimeError(f"Image load failed: {event}")
-            if progress and isinstance(event, dict) and event.get("stream"):
-                progress(event["stream"].strip(), None)
+        reader = ArchiveReader(tar, archive.stat().st_size, report)
+        events = remote.api.load_image(reader)
+        try:
+            for item in events:
+                if isinstance(item, dict) and (item.get("error") or item.get("errorDetail")):
+                    raise RuntimeError(f"Image load failed: {item}")
+                if isinstance(item, dict) and item.get("stream"):
+                    event(item["stream"].strip())
+        finally:
+            close = getattr(events, "close", None)
+            if close is not None:
+                close()
     loaded = remote.images.get(ref)
-    if loaded.id != image.id:
+    if loaded.id != image_id:
         raise RuntimeError(
-            f"Image verification failed for {ref}: expected {image.id}, got {loaded.id}"
+            f"Image verification failed for {ref}: expected {image_id}, got {loaded.id}"
         )
-    return image.id
+    return image_id
 
 
 def containers_using(remote, ref: str) -> list:

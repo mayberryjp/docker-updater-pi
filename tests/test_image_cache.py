@@ -5,8 +5,8 @@ from unittest.mock import Mock, call, patch
 
 from dockergo.config import Config, Site
 from dockergo.docker_ops import (
-    local_client, load_managed_images, prepare_archive, remove_cached_image,
-    save_managed_images, transfer,
+    _load_archive, local_client, load_managed_images, prepare_archive,
+    remove_cached_image, save_managed_images, transfer,
 )
 from dockergo.orchestrator import Orchestrator
 from dockergo.status import Status
@@ -173,9 +173,9 @@ class ImageCacheTests(unittest.TestCase):
         remote.api.load_image.return_value = [{"stream": "Loaded image"}]
         remote.images.get.return_value.id = "sha256:expected"
 
-        prepare_archive(local, "app:latest", self.archive_dir)
+        archive = prepare_archive(local, "app:latest", self.archive_dir)
         self.assertEqual(
-            transfer(local, remote, "app:latest", archive_dir=self.archive_dir),
+            _load_archive(remote, "app:latest", "sha256:expected", archive, Mock(), Mock()),
             "sha256:expected",
         )
         remote.images.get.assert_called_once_with("app:latest")
@@ -197,7 +197,7 @@ class ImageCacheTests(unittest.TestCase):
 
             remote.api.load_image.side_effect = load_image
             self.assertEqual(
-                transfer(local, remote, "app:latest", archive_dir=self.archive_dir),
+                _load_archive(remote, "app:latest", "sha256:expected", archive, Mock(), Mock()),
                 "sha256:expected",
             )
             self.assertEqual(payloads, [b"image archive"])
@@ -278,9 +278,9 @@ class ImageCacheTests(unittest.TestCase):
         remote.api.load_image.return_value = []
         remote.images.get.return_value.id = "sha256:old"
 
-        prepare_archive(local, "app:latest", self.archive_dir)
+        archive = prepare_archive(local, "app:latest", self.archive_dir)
         with self.assertRaisesRegex(RuntimeError, "Image verification failed"):
-            transfer(local, remote, "app:latest", archive_dir=self.archive_dir)
+            _load_archive(remote, "app:latest", "sha256:expected", archive, Mock(), Mock())
 
     def test_transfer_rejects_load_error(self):
         local = Mock()
@@ -289,9 +289,9 @@ class ImageCacheTests(unittest.TestCase):
         local.api.get_image.return_value = [b"image archive"]
         remote.api.load_image.return_value = [{"error": "load failed"}]
 
-        prepare_archive(local, "app:latest", self.archive_dir)
+        archive = prepare_archive(local, "app:latest", self.archive_dir)
         with self.assertRaisesRegex(RuntimeError, "Image load failed"):
-            transfer(local, remote, "app:latest", archive_dir=self.archive_dir)
+            _load_archive(remote, "app:latest", "sha256:expected", archive, Mock(), Mock())
         remote.images.get.assert_not_called()
 
     @patch("dockergo.orchestrator.dk.recreate")
@@ -299,12 +299,14 @@ class ImageCacheTests(unittest.TestCase):
     @patch("dockergo.orchestrator.dk.transfer")
     @patch("dockergo.orchestrator.dk.remote_client")
     @patch("dockergo.orchestrator.dk.have_image", return_value=True)
+    @patch("dockergo.orchestrator.dk.prepared_archive")
     @patch("dockergo.orchestrator.summary_api.fetch_pending_images",
            return_value=["app:latest"])
     @patch.object(Orchestrator, "_connect", return_value=True)
     def test_remote_recreates_only_with_verified_image_id(
-        self, _connect, _fetch, _have, remote_client, transfer_image, targets, recreate
+        self, _connect, _fetch, archive, _have, remote_client, transfer_image, targets, recreate
     ):
+        archive.return_value.stat.return_value.st_size = 100
         container = Mock()
         container.attrs = {"Name": "/app"}
         targets.return_value = [container]

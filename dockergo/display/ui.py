@@ -101,6 +101,19 @@ class StatusScreen:
 
         # --- scrolling log ---
         log_top = int(h * 0.6)
+        if s.transfer is not None:
+            t = s.transfer
+            lines = (
+                f"{t.current / 1048576:.1f}/{t.total / 1048576:.1f} MiB"
+                f"  {t.rate / 1048576:.2f} MiB/s",
+                f"elapsed {int(t.elapsed)}s  idle {int(t.idle)}s",
+            )
+            line_h = self.f_small.getbbox("Ag")[3] + 3
+            for i, text in enumerate(lines):
+                d.text((12, log_top + i * line_h),
+                       _ellipsize(text, self.f_small, w - 24, d),
+                       font=self.f_small, fill=FG, anchor="lt")
+            log_top += line_h * 2 + 8
         d.line([12, log_top - 6, w - 12, log_top - 6], fill=(34, 38, 48))
         line_h = self.f_small.getbbox("Ag")[3] + 3
         max_lines = max(1, (h - log_top - 4) // line_h)

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+
+from .transfer import TransferProgress
 
 
 class State(Enum):
@@ -47,6 +50,7 @@ class Snapshot:
     online: bool
     log: tuple
     updated_at: float
+    transfer: Optional[TransferProgress] = None
 
     @property
     def color(self):
@@ -67,11 +71,12 @@ class Status:
         self._detail = ""
         self._progress: Optional[float] = None
         self._online = False
+        self._transfer: Optional[TransferProgress] = None
         self._log: deque = deque(maxlen=log_lines)
         self._updated = time.time()
 
     def set(self, *, state=None, site=None, ssid=None, rssi=None,
-            headline=None, detail=None, progress=..., online=None):
+            headline=None, detail=None, progress=..., online=None, transfer=...):
         with self._lock:
             if state is not None:
                 self._state = state
@@ -89,9 +94,12 @@ class Status:
                 self._progress = progress
             if online is not None:
                 self._online = online
+            if transfer is not ...:
+                self._transfer = transfer
             self._updated = time.time()
 
-    def log(self, message: str):
+    def log(self, message: str, *, level: int = logging.INFO, exc_info: bool = False):
+        logging.getLogger(__name__).log(level, message, exc_info=exc_info)
         line = time.strftime("%H:%M:%S ") + message
         with self._lock:
             self._log.append(line)
@@ -111,4 +119,5 @@ class Status:
                 online=self._online,
                 log=tuple(self._log),
                 updated_at=self._updated,
+                transfer=self._transfer,
             )

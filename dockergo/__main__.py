@@ -10,6 +10,7 @@ import threading
 from .config import ConfigError, load_config
 from .discord import DiscordNotifier
 from .display import DisplayLoop
+from .logging_setup import configure_logging
 from .orchestrator import Orchestrator
 from .status import State, Status
 from .wifi import WifiManager
@@ -26,11 +27,20 @@ def main(argv=None) -> int:
     parser.add_argument("--mock-display", action="store_true",
                         help="render frames to dockergo-frame.png instead of the panel")
     parser.add_argument("--fb", help="framebuffer device (default /dev/fb1 or $DOCKERGO_FB)")
+    parser.add_argument("--log-file", default="/var/log/dockergo/dockergo.log",
+                        help="rotating diagnostic log (default /var/log/dockergo/dockergo.log)")
     args = parser.parse_args(argv)
+
+    try:
+        logger = configure_logging(args.log_file)
+    except OSError as exc:
+        print(f"log setup error: {exc}", file=sys.stderr)
+        return 2
 
     try:
         cfg = load_config(args.config)
     except ConfigError as exc:
+        logger.error("Config error: %s", exc)
         print(f"config error: {exc}", file=sys.stderr)
         return 2
 
@@ -57,10 +67,15 @@ def main(argv=None) -> int:
                 try:
                     orchestrator.cycle()
                 except Exception as exc:  # appliance: a failed cycle must not kill the loop
+                    logger.exception("Cycle failed")
                     status.set(state=State.ERROR, headline="Error", detail=str(exc)[:80])
                     status.log(f"ERROR: {exc}")
-                status.set(state=State.IDLE, headline="Idle",
-                           detail=f"next scan in {interval}s", progress=None)
+                if status.snapshot().state != State.ERROR:
+                    status.set(state=State.IDLE, headline="Idle",
+                               detail=f"next scan in {interval}s", progress=None)
+                else:
+                    status.log(f"Retrying failed work after {interval}s")
+                    status.set(progress=None, transfer=None)
                 stop.wait(interval)
     finally:
         notifier.close()

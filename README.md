@@ -46,6 +46,31 @@ changes are required. Allow disk space for both Docker's image store and the
 uncompressed archives; the first home sync after upgrading prepares archives
 for images already cached.
 
+At each remote site, prepared archives are uploaded **smallest first**, by
+actual archive byte size (not registry compressed size). Missing archives are
+reported and skipped. The LCD shows per-image byte progress, MiB/s, elapsed
+time and time since activity; throughput updates once per second and drops to
+zero during a stall. Bytes measure data handed to the HTTP transport, not
+remote acknowledgements. Once the payload has been handed off, the screen
+shows **Loading/verifying**: 100% bytes does not mean the image is ready.
+Containers are only recreated after the remote image ID is verified.
+
+Each transfer runs in a disposable worker process. No upload byte progress for
+120 seconds aborts the upload. After the payload is handed off, daemon loading
+and verification have a separate 600-second deadline, even if the daemon keeps
+emitting messages. A 7200-second overall deadline bounds the entire operation.
+Failed transfers do not restart containers; other images are still attempted,
+the site is marked incomplete, and pending images are retried next cycle.
+Disconnecting cannot cancel work already accepted by Docker; the remote daemon
+may finish a load after DockerGo has timed out.
+
+Diagnostics are written to `/var/log/dockergo/dockergo.log` and stderr
+(systemd journal). The file rotates at 5 MiB with three backups. Logs include
+upload order/sizes, transfer statistics every ten seconds, daemon output,
+verification results, and upload exception tracebacks. Use
+`sudo tail -f /var/log/dockergo/dockergo.log` to watch, or override the path
+with `--log-file dockergo.log` when developing without root.
+
 During a home sync, DockerGo also removes previously cached image references
 that no remote site's latest summary needs. It only removes references it has
 tracked in `/var/lib/dockergo/cached-images.json`, and Docker is not asked to
@@ -126,6 +151,9 @@ Config is JSON on the boot partition (editable from any PC):
 | `image_platform` | Manifest-list platform selector (default `linux/amd64`) |
 | `discord_webhook` | Optional webhook for mirrored status lines |
 | `poll_interval` | Seconds between Wi-Fi scan cycles |
+| `upload_stall_timeout` | Positive integer seconds without upload byte progress (default 120) |
+| `image_load_timeout` | Positive integer seconds for daemon loading/verification after payload handoff (default 600) |
+| `transfer_timeout` | Positive integer overall transfer deadline in seconds (default 7200) |
 | `sites[]` | `name`, `home` (one or more; first site defaults to home if none are marked), `ssid`, `password`, `docker_api`, `summary_url`, optional `wireguard_connection` on a home site |
 
 For an emergency home hotspot that reaches remotes over WireGuard, set
@@ -163,7 +191,7 @@ sudo python3 -m dockergo --once
 
 # Preview the LCD UI anywhere (writes dockergo-frame.png, no panel needed):
 pip install pillow numpy requests docker
-python -m dockergo --mock-display --once --config config.json
+python -m dockergo --mock-display --once --config config.json --log-file dockergo.log
 ```
 
 Useful flags: `--fb /dev/fb0`, `--interval 30`, `--mock-display`.

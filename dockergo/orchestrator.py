@@ -14,6 +14,8 @@ Home is always processed first (download where bandwidth is good), then remotes.
 
 from __future__ import annotations
 
+import logging
+import sys
 from typing import Optional
 
 from . import docker_ops as dk
@@ -21,6 +23,7 @@ from . import summary as summary_api
 from .config import Config, Site
 from .discord import DiscordNotifier
 from .status import State, Status
+from .transfer import TransferProgress
 from .wifi import WifiManager
 
 
@@ -49,8 +52,17 @@ class Orchestrator:
         self.status.set(state=state, headline=headline, detail=detail, progress=progress,
                         site=site, ssid=ssid, rssi=rssi, online=online)
         if message:
-            self.status.log(message)
+            self.status.log(
+                message, level=logging.ERROR if state == State.ERROR else logging.INFO,
+                exc_info=sys.exc_info()[0] is not None,
+            )
             self.notifier.send(message)
+
+    def _transfer_progress(self, update: TransferProgress):
+        self.status.set(
+            transfer=update, progress=update.current / update.total,
+            detail=update.phase,
+        )
 
     def cycle(self):
         self.announce("Scanning Wi-Fi", state=State.SCANNING, headline="Scanning Wi-Fi",
@@ -191,35 +203,69 @@ class Orchestrator:
                       headline=f"Applying at {site.name}", detail=f"{len(needed)} images",
                       progress=0.0 if needed else None)
 
-        for index, ref in enumerate(needed, 1):
+        queued = []
+        failed = False
+        for ref in needed:
             short = _short(ref)
             if not dk.have_image(self.local, ref):
                 self.announce(f"Not cached, skipping {short}")
+                failed = True
                 continue
-            self.announce(f"Uploading {short} to {site.name}", headline=f"Uploading {short}",
-                          detail=f"{index}/{len(needed)}", progress=(index - 1) / max(1, len(needed)))
+            try:
+                size = dk.prepared_archive(self.local, ref).stat().st_size
+                queued.append((size, ref))
+            except Exception as exc:
+                failed = True
+                self.announce(f"Cannot queue {short}: {exc}", state=State.ERROR)
+        queued.sort(key=lambda item: item[0])
+        self.status.log("Upload order: " + ", ".join(
+            f"{ref} ({size} bytes)" for size, ref in queued
+        ))
+
+        for index, (size, ref) in enumerate(queued, 1):
+            short = _short(ref)
+            self.announce(f"Uploading {short} to {site.name} ({size} bytes)",
+                          state=State.APPLYING, headline=f"Uploading {short}",
+                          detail=f"{index}/{len(queued)}", progress=0.0)
             try:
                 image_id = dk.transfer(
-                    self.local, remote, ref,
-                    progress=lambda text, frac: self.status.set(detail=text[:60]))
+                    self.local, remote, ref, progress=self._transfer_progress,
+                    stall_timeout=self.cfg.upload_stall_timeout,
+                    load_timeout=self.cfg.image_load_timeout,
+                    total_timeout=self.cfg.transfer_timeout,
+                    docker_host=site.docker_host,
+                )
             except Exception as exc:
-                self.announce(f"Upload failed {short}: {exc}", state=State.ERROR)
+                failed = True
+                self.announce(f"Upload failed {short}: {exc}", state=State.ERROR,
+                              headline=f"Upload failed {short}", detail=str(exc)[:80],
+                              progress=None)
                 continue
+            finally:
+                self.status.set(transfer=None)
 
             try:
                 targets = dk.containers_using(remote, ref)
             except Exception as exc:
-                self.announce(f"Inspect failed {short}: {exc}")
+                failed = True
+                self.announce(f"Inspect failed {short}: {exc}", state=State.ERROR)
                 targets = []
             for container in targets:
                 cname = container.attrs.get("Name", "").lstrip("/")
-                self.announce(f"Restarting {cname}", headline=f"Restarting {cname}", detail=short)
+                self.announce(f"Restarting {cname}", headline=f"Restarting {cname}",
+                              detail=short, progress=None)
                 try:
                     dk.recreate(remote, container, image_id,
                                 progress=lambda text, frac: self.status.set(detail=text[:60]))
                     self.announce(f"Restarted {cname}")
                 except Exception as exc:
+                    failed = True
                     self.announce(f"Restart failed {cname}: {exc}", state=State.ERROR)
 
-        self.announce(f"{site.name} up to date", state=State.APPLYING,
-                      headline=f"{site.name} done", detail="", progress=None)
+        remote.close()
+        self.announce(
+            f"{site.name} finished with failures" if failed else f"{site.name} up to date",
+            state=State.ERROR if failed else State.APPLYING,
+            headline=f"{site.name} incomplete" if failed else f"{site.name} done",
+            detail="Retry next cycle" if failed else "", progress=None,
+        )

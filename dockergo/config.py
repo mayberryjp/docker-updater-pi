@@ -49,6 +49,9 @@ class Config:
     image_platform: str = DEFAULT_PLATFORM
     discord_webhook: Optional[str] = None
     poll_interval: int = 60
+    upload_stall_timeout: int = 120
+    image_load_timeout: int = 600
+    transfer_timeout: int = 7200
     sites: list = field(default_factory=list)
 
     @property
@@ -149,10 +152,21 @@ def _parse(raw, source: Path) -> Config:
         except KeyError as exc:
             raise ConfigError(f"{source}: sites[{i}] missing required key {exc}") from exc
 
+    timeouts = {}
+    for key, default in (
+        ("upload_stall_timeout", 120), ("image_load_timeout", 600),
+        ("transfer_timeout", 7200),
+    ):
+        value = raw.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ConfigError(f"{source}: '{key}' must be a positive integer (seconds)")
+        timeouts[key] = value
+
     return Config(
         device_name=str(raw.get("device_name", "dockergo")),
         image_platform=str(raw.get("image_platform", DEFAULT_PLATFORM)),
         discord_webhook=(raw.get("discord_webhook") or None),
         poll_interval=int(raw.get("poll_interval", 60)),
         sites=sites,
+        **timeouts,
     )
