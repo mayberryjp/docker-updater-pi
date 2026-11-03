@@ -102,6 +102,7 @@ def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None,
     downloads: dict[str, tuple[int, int]] = {}
     extractions: dict[str, tuple[int, int]] = {}
     last_events: dict[str, tuple[str, int, float]] = {}
+    cached = False
     LOG.info("Pull requested: ref=%s platform=%s", ref, platform)
     with ProgressReporter(LOG, ref, "Waiting for registry", transfer_progress) as meter:
         events = client.api.pull(ref, platform=platform, stream=True, decode=True)
@@ -111,6 +112,8 @@ def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None,
                     raise APIError(event.get("error") or str(event["errorDetail"]))
                 layer_id = event.get("id", "")
                 status = event.get("status", "")
+                if status == "Already exists" or status.startswith("Status: Image is up to date for "):
+                    cached = True
                 detail = event.get("progressDetail") or {}
                 current = int(detail.get("current") or 0)
                 total = int(detail.get("total") or 0)
@@ -161,14 +164,17 @@ def pull(client, ref: str, platform: str, progress: Optional[ProgressCb] = None,
         meter.update(phase="Checking downloaded image")
         image = client.images.get(ref)
         downloaded = sum(c for c, _ in downloads.values())
+        cached = cached and not downloads and not extractions
         meter.update(
-            phase="Download complete", current=downloaded,
+            phase="Image already cached" if cached else "Download complete", current=downloaded,
             total=sum(t for _, t in downloads.values()) or None,
-            detail=f"{len(downloads)} downloaded layer(s); {len(extractions)} extracted layer(s)",
+            detail="Registry confirms cached image; no layer bytes downloaded" if cached else (
+                f"{len(downloads)} downloaded layer(s); {len(extractions)} extracted layer(s)"
+            ),
         )
         LOG.info(
-            "Pull complete: ref=%s image_id=%s downloaded_bytes=%d extracted_bytes=%d",
-            ref, image.id, downloaded, sum(c for c, _ in extractions.values()),
+            "Pull complete: ref=%s image_id=%s cached=%s downloaded_bytes=%d extracted_bytes=%d",
+            ref, image.id, cached, downloaded, sum(c for c, _ in extractions.values()),
         )
         return image
 

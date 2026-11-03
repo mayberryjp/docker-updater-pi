@@ -10,11 +10,73 @@ from dockergo.config import Config, Site
 from dockergo.docker_ops import prepare_archive, pull
 from dockergo.logging_setup import configure_logging
 from dockergo.orchestrator import Orchestrator
-from dockergo.status import Status
+from dockergo.status import State, Status
 from dockergo.transfer import TransferProgress
 
 
 class ProgressTests(unittest.TestCase):
+    def test_up_to_date_pull_is_explicitly_cached_not_a_zero_byte_download(self):
+        client = Mock()
+        client.api.pull.return_value = [
+            {"id": "stable", "status": "Pulling from example/app"},
+            {"status": "Digest: sha256:expected"},
+            {"status": "Status: Image is up to date for example/app:stable"},
+        ]
+        updates = []
+        with self.assertLogs("dockergo.docker_ops", level="INFO"):
+            pull(client, "example/app:stable", "linux/amd64", transfer_progress=updates.append)
+        self.assertEqual(updates[-1].phase, "Image already cached")
+        self.assertEqual(updates[-1].current, 0)
+        self.assertIn("no layer bytes downloaded", updates[-1].detail)
+        self.assertFalse(any(u.phase == "Download complete" for u in updates))
+
+    def test_home_reports_partial_pull_failure_and_continues_with_cached_image(self):
+        home = Site("HOME", "home", "", "", "", home=True)
+        remote = Site("REMOTE", "remote", "", "", "https://summary")
+        status, notifier = Status("test"), Mock()
+        orchestrator = Orchestrator(Config(sites=[home, remote]), status, notifier, Mock())
+        orchestrator._local = Mock()
+
+        def download(_client, ref, _platform, *, transfer_progress):
+            if ref == "broken":
+                raise RuntimeError("dial tcp 192.0.2.1:443: i/o timeout")
+            transfer_progress(TransferProgress("Image already cached", 0, None, 0, 1, 1))
+
+        with patch("dockergo.orchestrator.summary_api.fetch_pending_images",
+                   return_value=["broken", "cached"]), \
+             patch("dockergo.orchestrator.dk.load_managed_images", return_value=set()), \
+             patch("dockergo.orchestrator.dk.save_managed_images") as save, \
+             patch("dockergo.orchestrator.dk.pull", side_effect=download), \
+             patch("dockergo.orchestrator.dk.prepare_archive") as prepare, \
+             self.assertLogs("dockergo", level="INFO"):
+            orchestrator._sync_home(home)
+        self.assertEqual(status.snapshot().state, State.ERROR)
+        self.assertEqual(status.snapshot().headline, "Home sync incomplete")
+        self.assertIn("1/2 ready", status.snapshot().detail)
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.args[1], "cached")
+        save.assert_called_once_with({"cached"})
+        messages = [c.args[0] for c in notifier.send.call_args_list]
+        self.assertIn("Already cached cached", messages)
+        self.assertNotIn("Downloaded cached", messages)
+        self.assertNotIn("Home sync complete", messages)
+
+    def test_archive_failure_prevents_successful_home_sync(self):
+        home = Site("HOME", "home", "", "", "", home=True)
+        remote = Site("REMOTE", "remote", "", "", "https://summary")
+        status = Status("test")
+        orchestrator = Orchestrator(Config(sites=[home, remote]), status, Mock(), Mock())
+        orchestrator._local = Mock()
+        with patch("dockergo.orchestrator.summary_api.fetch_pending_images", return_value=["app"]), \
+             patch("dockergo.orchestrator.dk.load_managed_images", return_value=set()), \
+             patch("dockergo.orchestrator.dk.save_managed_images"), \
+             patch("dockergo.orchestrator.dk.pull"), \
+             patch("dockergo.orchestrator.dk.prepare_archive", side_effect=OSError("disk full")), \
+             self.assertLogs("dockergo", level="INFO"):
+            orchestrator._sync_home(home)
+        self.assertEqual(status.snapshot().state, State.ERROR)
+        self.assertIn("0/1 ready", status.snapshot().detail)
+
     def test_pull_reports_download_and_extraction_bytes_separately(self):
         client = Mock()
         client.api.pull.return_value = [

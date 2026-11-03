@@ -66,6 +66,12 @@ is unknown until export finishes, so it shows `total unknown` rather than a
 made-up percentage. Cached archives show their verified local file size without
 exporting again.
 
+When Docker reports an image is already up to date, zero downloaded layer bytes
+is normal: DockerGo labels it **Image already cached** rather than a new download.
+Home sync reports **incomplete** if a summary, pull, export, or cache-state/
+cleanup operation fails, with the count of images whose archives are ready.
+Remaining images are still attempted; failed work is retried on a later home sync.
+
 Each transfer runs in a disposable worker process. No upload byte progress for
 120 seconds aborts the upload. After the payload is handed off, daemon loading
 and verification have a separate 600-second deadline, even if the daemon keeps

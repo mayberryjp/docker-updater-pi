@@ -9,7 +9,7 @@ from dockergo.docker_ops import (
     remove_cached_image, save_managed_images, transfer,
 )
 from dockergo.orchestrator import Orchestrator
-from dockergo.status import Status
+from dockergo.status import State, Status
 from dockergo.summary import fetch_pending_images
 
 
@@ -119,8 +119,11 @@ class ImageCacheTests(unittest.TestCase):
     def test_home_sync_removes_only_no_longer_needed_managed_refs(
         self, _fetch, _load, pull, remove, save, prepare
     ):
-        self.make_orchestrator()._sync_home(self.home)
+        orchestrator = self.make_orchestrator()
+        orchestrator._sync_home(self.home)
 
+        self.assertEqual(orchestrator.status.snapshot().state, State.HOME_SYNC)
+        self.assertEqual(orchestrator.status.snapshot().headline, "Home sync complete")
         pull.assert_called_once()
         self.assertEqual(pull.call_args.args[1], "needed:latest")
         prepare.assert_called_once()
@@ -141,10 +144,33 @@ class ImageCacheTests(unittest.TestCase):
         self, _fetch, _load, _pull, remove, save, _prepare
     ):
         second_remote = Site("REMOTE2", "remote2", "", "", "https://summary2")
-        self.make_orchestrator([self.home, self.remote, second_remote])._sync_home(self.home)
+        orchestrator = self.make_orchestrator([self.home, self.remote, second_remote])
+        orchestrator._sync_home(self.home)
 
+        self.assertEqual(orchestrator.status.snapshot().state, State.ERROR)
+        self.assertEqual(orchestrator.status.snapshot().headline, "Home sync incomplete")
         remove.assert_not_called()
         save.assert_called_once_with({"needed:latest", "stale:latest"})
+
+    def test_home_sync_cache_errors_are_not_reported_as_success(self):
+        for operation in ("load", "remove", "save"):
+            with self.subTest(operation=operation), \
+                 patch("dockergo.orchestrator.summary_api.fetch_pending_images", return_value=["app"]), \
+                 patch("dockergo.orchestrator.dk.pull"), \
+                 patch("dockergo.orchestrator.dk.prepare_archive"), \
+                 patch("dockergo.orchestrator.dk.load_managed_images",
+                       side_effect=RuntimeError("invalid state") if operation == "load" else None,
+                       return_value={"stale"}) as load, \
+                 patch("dockergo.orchestrator.dk.remove_cached_image",
+                       side_effect=RuntimeError("in use") if operation == "remove" else None), \
+                 patch("dockergo.orchestrator.dk.save_managed_images",
+                       side_effect=OSError("disk full") if operation == "save" else None), \
+                 self.assertLogs("dockergo", level="INFO"):
+                orchestrator = self.make_orchestrator()
+                orchestrator._sync_home(self.home)
+                load.assert_called_once()
+                self.assertEqual(orchestrator.status.snapshot().state, State.ERROR)
+                self.assertIn("1/1 ready", orchestrator.status.snapshot().detail)
 
     def test_cache_state_round_trips_and_rejects_invalid_data(self):
         with tempfile.TemporaryDirectory() as directory:

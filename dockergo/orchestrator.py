@@ -126,6 +126,7 @@ class Orchestrator:
     def _sync_home(self, home: Site):
         wanted: list = []
         summaries_complete = True
+        failures = ready = 0
         for site in self.cfg.sites:
             if site.home:
                 continue
@@ -135,7 +136,8 @@ class Orchestrator:
                         wanted.append(ref)
             except Exception as exc:
                 summaries_complete = False
-                self.announce(f"{site.name} summary failed: {exc}")
+                failures += 1
+                self.announce(f"{site.name} summary failed: {exc}", state=State.ERROR)
 
         cache_state_available = True
         try:
@@ -143,7 +145,8 @@ class Orchestrator:
         except Exception as exc:
             cache_state_available = False
             managed = set()
-            self.announce(f"Image cache state unavailable; pruning disabled: {exc}")
+            failures += 1
+            self.announce(f"Image cache state unavailable; pruning disabled: {exc}", state=State.ERROR)
 
         self.announce(f"Home needs {len(wanted)} image(s)", state=State.HOME_SYNC,
                       headline="Downloading images", detail=f"{len(wanted)} queued",
@@ -151,14 +154,19 @@ class Orchestrator:
 
         for index, ref in enumerate(wanted, 1):
             short = _short(ref)
-            self.announce(f"Downloading {short}", headline=f"Downloading {short}",
+            self.announce(f"Downloading {short}", state=State.HOME_SYNC, headline=f"Downloading {short}",
                           detail=f"{index}/{len(wanted)}", progress=0.0)
             try:
                 dk.pull(self.local, ref, self.cfg.platform_for(home),
                         transfer_progress=self._transfer_progress)
                 managed.add(ref)
-                self.announce(f"Downloaded {short}")
+                update = self.status.snapshot().transfer
+                self.announce(
+                    f"Already cached {short}" if update is not None and update.phase == "Image already cached"
+                    else f"Downloaded {short}"
+                )
             except Exception as exc:
+                failures += 1
                 self.announce(f"Download failed {short}: {exc}", state=State.ERROR)
                 continue
             finally:
@@ -167,7 +175,9 @@ class Orchestrator:
                           detail=f"{index}/{len(wanted)}", progress=None)
             try:
                 dk.prepare_archive(self.local, ref, progress=self._transfer_progress)
+                ready += 1
             except Exception as exc:
+                failures += 1
                 self.announce(f"Archive failed {short}: {exc}", state=State.ERROR)
             finally:
                 self.status.set(transfer=None)
@@ -180,14 +190,22 @@ class Orchestrator:
                         managed.remove(ref)
                         self.announce(f"Removed unused image {_short(ref)}")
                     except Exception as exc:
+                        failures += 1
                         self.announce(f"Image cleanup failed {_short(ref)}: {exc}", state=State.ERROR)
             try:
                 dk.save_managed_images(managed)
             except Exception as exc:
+                failures += 1
                 self.announce(f"Could not save image cache state: {exc}", state=State.ERROR)
 
-        self.announce("Home sync complete", state=State.HOME_SYNC,
-                      headline="Home sync complete", detail="", progress=None)
+        self.announce(
+            f"Home sync incomplete: {ready}/{len(wanted)} image(s) ready; {failures} failure(s)"
+            if failures else "Home sync complete",
+            state=State.ERROR if failures else State.HOME_SYNC,
+            headline="Home sync incomplete" if failures else "Home sync complete",
+            detail=f"{ready}/{len(wanted)} ready; retry next cycle" if failures else "",
+            progress=None,
+        )
 
     def _do_remote(self, site: Site):
         if not self._connect(site):
